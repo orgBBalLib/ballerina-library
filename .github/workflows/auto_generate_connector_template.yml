@@ -201,8 +201,11 @@ jobs:
 
       - name: Create Branch
         run: |
-          git checkout -b auto-generate-connector
-          echo "Created branch: auto-generate-connector"
+          BRANCH_TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+          BRANCH_NAME="auto-generate-connector-${BRANCH_TIMESTAMP}"
+          git checkout -b "${BRANCH_NAME}"
+          echo "BRANCH_NAME=${BRANCH_NAME}" >> $GITHUB_ENV
+          echo "Created branch: ${BRANCH_NAME}"
 
       - name: Run Full Connector Generation Pipeline
         run: |
@@ -365,6 +368,6 @@ jobs:
 
       - name: Push Results
         if: ${{ steps.commitFiles.outputs.hasChanged == 'true' }}
-        run: git push origin auto-generate-connector
+        run: git push origin ${{ env.BRANCH_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.BALLERINA_BOT_TOKEN }}

@@ -138,10 +138,6 @@ function getTypeContextForFile(string projectPath, string filePath, CompilationE
     // Extract type names mentioned in errors
     string[] typeNames = extractTypeNamesFromErrors(errors);
 
-    if typeNames.length() == 0 {
-        return "";
-    }
-
     // Try to read types.bal from the project
     string typesFilePath = projectPath + "/types.bal";
     string|io:Error typesContent = io:fileReadString(typesFilePath);
@@ -154,8 +150,25 @@ function getTypeContextForFile(string projectPath, string filePath, CompilationE
         }
     }
 
+    // Try to read client.bal for additional context on method signatures
+    string clientFilePath = projectPath + "/client.bal";
+    string|io:Error clientContent = io:fileReadString(clientFilePath);
+
+    // Build comprehensive context
+    string[] contextParts = [];
+
+    // Add full types.bal content for better type understanding
     if typesContent is string {
-        // Extract relevant type definitions from types.bal
+        contextParts.push("FULL TYPES DEFINITIONS (types.bal):\n" + typesContent);
+    }
+
+    // Add full client.bal content for method signatures and patterns
+    if clientContent is string {
+        contextParts.push("FULL CLIENT IMPLEMENTATION (client.bal):\n" + clientContent);
+    }
+
+    // Also extract specific types mentioned in errors for emphasis
+    if typeNames.length() > 0 && typesContent is string {
         string[] relevantTypes = [];
         foreach string typeName in typeNames {
             string typeDefinition = extractTypeDefinition(typesContent, typeName);
@@ -165,8 +178,12 @@ function getTypeContextForFile(string projectPath, string filePath, CompilationE
         }
 
         if relevantTypes.length() > 0 {
-            typeContext = "RELEVANT TYPE DEFINITIONS:\n" + string:'join("\n\n", ...relevantTypes);
+            contextParts.push("TYPES REFERENCED IN ERRORS (pay special attention to these):\n" + string:'join("\n\n", ...relevantTypes));
         }
+    }
+
+    if contextParts.length() > 0 {
+        typeContext = string:'join("\n\n---\n\n", ...contextParts);
     }
 
     return typeContext;
