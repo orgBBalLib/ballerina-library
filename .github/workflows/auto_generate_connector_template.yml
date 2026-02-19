@@ -8,25 +8,33 @@ on:
         required: false
         type: string
       ballerina-version:
-        description: "Ballerina version to use"
         required: false
         type: string
         default: "2201.13.0"
       distribution-zip:
-        description: "Distribution URL of the Ballerina version to be used"
         required: false
         type: string
         default: ""
       license-file:
-        description: "Path to license file relative to docs directory"
         required: false
         type: string
         default: "license.txt"
       quiet-mode:
-        description: "Enable quiet mode"
         required: false
         type: boolean
         default: true
+      regenerate-existing:
+        description: "Set to true if regenerating an existing connector for a new OpenAPI spec version"
+        required: false
+        type: boolean
+        default: false
+
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      BALLERINA_BOT_TOKEN:
+        required: true
+
 
 jobs:
   auto-generate:
@@ -48,7 +56,7 @@ jobs:
           version: ${{ inputs.ballerina-version }}
 
       - name: Set up JDK 21
-        if: inputs.distribution-zip != '' 
+        if: inputs.distribution-zip != ''
         uses: actions/setup-java@v3
         with:
           distribution: "temurin"
@@ -130,7 +138,7 @@ jobs:
       - name: Clone Connector Automator
         run: |
           echo "Cloning connector automator tool from ballerina-library..."
-           git clone -b connector-automation https://github.com/nostoc/ballerina-library.git temp-library
+           git clone -b main https://github.com/orgBBalLib/ballerina-library.git temp-library
           cp -r temp-library/connector_automator ./
           rm -rf temp-library
           echo "Connector automator cloned successfully"
@@ -142,12 +150,18 @@ jobs:
           # Create docs/spec directory if doesn't exist
           mkdir -p docs/spec
           cd docs/spec
+
+          # Delete ALL existing OpenAPI spec files first to avoid conflicts
+          rm -f openapi.json openapi.yaml openapi.yml
+          echo "Removed any existing OpenAPI spec files"
+
+          # Download new spec based on URL extension
           if [[ "${{ inputs.openapi-url }}" == *.json ]]; then
-            rm -f openapi.json
             wget -O openapi.json "${{ inputs.openapi-url }}"
+            echo "Downloaded openapi.json"
           elif [[ "${{ inputs.openapi-url }}" == *.yaml || "${{ inputs.openapi-url }}" == *.yml ]]; then
-            rm -f openapi.yaml openapi.yml
             wget -O openapi.yaml "${{ inputs.openapi-url }}"
+            echo "Downloaded openapi.yaml"
           else
             echo "Unsupported file extension: ${{ inputs.openapi-url }}"
             exit 1
@@ -156,13 +170,30 @@ jobs:
       - name: Read File Extension
         working-directory: docs/spec
         run: |
-          file=$(echo openapi.*)
-          if [[ "$file" == "openapi.*" ]]; then
+          # Count OpenAPI spec files
+          file_count=$(ls openapi.{json,yaml,yml} 2>/dev/null | wc -l)
+
+          if [ "$file_count" -eq 0 ]; then
             echo "Error: No OpenAPI specification found in docs/spec/"
             echo "Either provide openapi-url input or commit a spec file to docs/spec/"
             echo "Supported files: openapi.json, openapi.yaml, openapi.yml"
             exit 1
+          elif [ "$file_count" -gt 1 ]; then
+            echo "Error: Multiple OpenAPI spec files found:"
+            ls -la openapi.* 2>/dev/null || true
+            echo "Please ensure only one openapi.{json,yaml,yml} file exists"
+            exit 1
           fi
+
+          # Get the single file
+          if [ -f "openapi.json" ]; then
+            file="openapi.json"
+          elif [ -f "openapi.yaml" ]; then
+            file="openapi.yaml"
+          elif [ -f "openapi.yml" ]; then
+            file="openapi.yml"
+          fi
+
           ext="${file##*.}"
           echo "EXTENSION=$ext" >> "$GITHUB_ENV"
           echo "SPEC_FILE=$file" >> "$GITHUB_ENV"
@@ -185,6 +216,7 @@ jobs:
           echo "Working directory: $(pwd)"
           echo "GITHUB_WORKSPACE: ${GITHUB_WORKSPACE}"
           echo "Ballerina command: ${{ env.BALLERINA_CMD }}"
+          echo "Regenerate existing: ${{ inputs.regenerate-existing }}"
 
           # Verify the spec file exists
           if [ ! -f "$SPEC_PATH" ]; then
@@ -200,17 +232,17 @@ jobs:
             BALLERINA_BIN_DIR=$(dirname "${{ env.BALLERINA_CMD }}")
             export PATH="$BALLERINA_BIN_DIR:$PATH"
             echo "Added $BALLERINA_BIN_DIR to PATH"
-            
+
             # Verify bal is now available
             which bal
             bal version
           fi
 
-          # create Config.toml for the connector automator. 
+          # create Config.toml for the connector automator.
 
           cat > Config.toml << EOF
           [connector_automator.code_fixer]
-          maxIterations = 3
+          maxIterations = 5
 
           [connector_automator.utils]
           apiKey = "${{ secrets.ANTHROPIC_API_KEY }}"
@@ -225,6 +257,11 @@ jobs:
             PIPELINE_ARGS+=("quiet")
           fi
 
+          # Add regenerate flag if set
+          if [ "${{ inputs.regenerate-existing }}" = "true" ]; then
+            PIPELINE_ARGS+=("regenerate")
+          fi
+
           # Add license file if provided
           if [ -n "${{ inputs.license-file }}" ]; then
             LICENSE_PATH="${GITHUB_WORKSPACE}/docs/${{ inputs.license-file }}"
@@ -233,7 +270,7 @@ jobs:
               echo "Using license file: $LICENSE_PATH"
             fi
           fi
-        
+
           # Run the complete pipeline
           ${{ env.BALLERINA_CMD }} run -- pipeline "${PIPELINE_ARGS[@]}"
 
@@ -277,17 +314,17 @@ jobs:
         run: |
           rm -rf connector_automator
           rm -f -r ballerina-dist/
-      
+
       - name: Cleanup
         run: |
           # Remove all Dependencies.toml files
           find . -name "Dependencies.toml" -type f -delete
           echo "Removed Dependencies.toml files"
-          
+
           # Remove all .backup files
           find . -name "*.backup" -type f -delete
           echo "Removed .backup files"
-          
+
           # Remove all target directories
           find . -name "target" -type d -exec rm -rf {} +
           echo "Removed target directories"
@@ -300,11 +337,18 @@ jobs:
       - name: Commit Generated Files
         id: commitFiles
         run: |
-          # Build commit message 
-          COMMIT_MSG="[AUTOMATED] [AI] Auto-generate connector from OpenAPI spec
+          # Build commit message
+          if [ "${{ inputs.regenerate-existing }}" = "true" ]; then
+            COMMIT_MSG="[AUTOMATED] [AI] Regenerate connector for new OpenAPI spec version
+
+          Updated connector for new OpenAPI specification version.
+          Generated using Ballerina with AI-powered automation."
+          else
+            COMMIT_MSG="[AUTOMATED] [AI] Auto-generate connector from OpenAPI spec
 
           Complete connector generation using full pipeline with all components.
           Generated using Ballerina with AI-powered automation."
+          fi
 
           # Add all changes
           git add .
@@ -322,18 +366,5 @@ jobs:
       - name: Push Results
         if: ${{ steps.commitFiles.outputs.hasChanged == 'true' }}
         run: git push origin auto-generate-connector
-        env:
-          GITHUB_TOKEN: ${{ secrets.BALLERINA_BOT_TOKEN }}
-
-      - name: Create Pull Request
-        id: createPR
-        if: ${{ steps.commitFiles.outputs.hasChanged == 'true' }}
-        run: |
-          prUrl=$(gh pr create \
-            --title "[Automated] [AI] Auto-generate connector from OpenAPI specification" \
-            --body $'## **This PR contains AI-generated content that requires review before merging.**\n\n### What was generated:\n- Sanitized OpenAPI specification with AI enhancements\n- Ballerina client library with proper type definitions\n- Usage examples demonstrating key API operations\n- Test suite with mock server implementation\n- Complete documentation package\n\n### Generated using:\n- Ballerina version: ${{ inputs.ballerina-version }}\n- Full automation pipeline with AI-powered improvements\n- Automatic compilation error fixes\n\n### Before merging:\n- Test examples with real API credentials\n- Verify client methods work as expected\n- Review AI-generated descriptions for accuracy\n- Validate mock server responses match actual API\n\n**Manual validation is required before production use.**' \
-            --base ${{ github.ref }} \
-            --head auto-generate-connector)
-          echo "prUrl=$prUrl" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.BALLERINA_BOT_TOKEN }}
