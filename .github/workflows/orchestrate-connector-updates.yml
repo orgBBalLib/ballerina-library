@@ -29,7 +29,6 @@ jobs:
       - name: Parse connector updates
         id: parse_connectors
         run: |
-          # Handle both repository_dispatch and workflow_dispatch
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             CONNECTORS='${{ github.event.client_payload.connectors }}'
           else
@@ -39,7 +38,6 @@ jobs:
           echo "Received connectors payload:"
           echo "$CONNECTORS" | jq '.'
 
-          # Save to file for later use
           echo "$CONNECTORS" > connectors_to_update.json
 
           CONNECTOR_COUNT=$(echo "$CONNECTORS" | jq 'length')
@@ -100,12 +98,10 @@ jobs:
           TOTAL_CONNECTORS=$(wc -l < triggered_connectors.txt)
           echo "Monitoring $TOTAL_CONNECTORS connector repositories..."
 
-          # Initial wait: 10 minutes for connector generation workflows to complete
           INITIAL_WAIT=600
           echo "⏳ Waiting ${INITIAL_WAIT} seconds (10 minutes) for connector generation workflows to process..."
           sleep $INITIAL_WAIT
 
-          # Then check every 30 seconds for up to 30 more minutes
           MAX_WAIT=1800
           CHECK_INTERVAL=30
           ELAPSED=0
@@ -120,7 +116,6 @@ jobs:
             echo "=== Check at $((INITIAL_WAIT + ELAPSED)) seconds total elapsed ==="
 
             while IFS='|' read -r REPO SPEC VERSION; do
-              # Look for PRs with "Auto-generated connector" in title
               PR_INFO=$(gh pr list \
                 --repo "$REPO" \
                 --state open \
@@ -169,7 +164,6 @@ jobs:
         run: |
           echo "Collecting PR information from all triggered connectors..."
 
-          # Create JSON file to store all PR information
           echo "[]" > connector_prs.json
 
           while IFS='|' read -r REPO SPEC VERSION; do
@@ -181,7 +175,7 @@ jobs:
               --repo "$REPO" \
               --state all \
               --limit 10 \
-              --json number,title,url,state,createdAt \
+              --json number,title,url,state,createdAt,body \
               --jq '[.[] | select(.title | contains("Auto-generated connector"))] | sort_by(.createdAt) | reverse | .[0]' 2>/dev/null || echo "null")
 
             if [ -n "$PR_DATA" ] && [ "$PR_DATA" != "null" ] && [ "$PR_DATA" != "{}" ]; then
@@ -199,20 +193,36 @@ jobs:
                 BUILD_STATUS="FAILED"
               fi
 
+              # Extract new version from PR body
+              PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
+              NEW_VERSION=$(echo "$PR_BODY" | grep -oP 'New Version.*?`\K[^`]+' || echo "")
+
+              # Extract code owners from PR body
+              CODE_OWNERS=$(echo "$PR_BODY" | grep -oP 'Code Owners:.*?\K@[\w-]+(,\s*@[\w-]+)*' | tr -d '@' | tr ',' ' ' || echo "")
+
+              # Extract connector name from repo (orgBBalLib/module-ballerinax-hubspot.crm.associations -> hubspot.crm.associations)
+              CONNECTOR_NAME=$(echo "$REPO" | sed 's|^orgBBalLib/module-ballerinax-||')
+
               # Build connector info JSON
               CONNECTOR_INFO=$(jq -n \
                 --arg repo "$REPO" \
+                --arg connectorName "$CONNECTOR_NAME" \
                 --arg spec "$SPEC" \
                 --arg version "$VERSION" \
                 --arg changeType "$CHANGE_TYPE" \
                 --arg buildStatus "$BUILD_STATUS" \
+                --arg newVersion "$NEW_VERSION" \
+                --arg codeOwners "$CODE_OWNERS" \
                 --argjson prData "$PR_DATA" \
                 '{
                   repository: $repo,
+                  connectorName: $connectorName,
                   specification: $spec,
-                  version: $version,
+                  openapiVersion: $version,
                   changeType: $changeType,
                   buildStatus: $buildStatus,
+                  expectedVersion: $newVersion,
+                  codeOwners: $codeOwners,
                   pr: $prData
                 }')
 
@@ -221,17 +231,22 @@ jobs:
             else
               echo "  ⚠️ No auto-generated PR found for $REPO - may still be processing"
 
-              # Add placeholder entry
+              CONNECTOR_NAME=$(echo "$REPO" | sed 's|^orgBBalLib/module-ballerinax-||')
+
               CONNECTOR_INFO=$(jq -n \
                 --arg repo "$REPO" \
+                --arg connectorName "$CONNECTOR_NAME" \
                 --arg spec "$SPEC" \
                 --arg version "$VERSION" \
                 '{
                   repository: $repo,
+                  connectorName: $connectorName,
                   specification: $spec,
-                  version: $version,
+                  openapiVersion: $version,
                   changeType: "PROCESSING",
                   buildStatus: "In Progress",
+                  expectedVersion: "",
+                  codeOwners: "",
                   pr: {number: 0, title: "Processing", url: "", state: "processing"}
                 }')
 
@@ -252,12 +267,14 @@ jobs:
           # Generate HTML table rows from connector_prs.json
           TABLE_ROWS=$(cat connector_prs.json | jq -r '.[] |
             "<tr>" +
-            "<td>" + .repository + "</td>" +
+            "<td>" + .connectorName + "</td>" +
             "<td><code>" + .specification + "</code></td>" +
-            "<td><code>" + .version + "</code></td>" +
+            "<td><code>" + .openapiVersion + "</code></td>" +
+            "<td><code>" + (.expectedVersion // "N/A") + "</code></td>" +
             "<td><span class=\"change-" + (.changeType | ascii_downcase) + "\">" + .changeType + "</span></td>" +
             "<td>" + (if .buildStatus == "FAILED" then "<span class=\"status-failed\">❌ FAILED</span>" elif .buildStatus == "In Progress" then "⏳ In Progress" else "<span class=\"status-success\">✅ Success</span>" end) + "</td>" +
             "<td>" + (if .pr.number > 0 then "<a href=\"" + .pr.url + "\">#" + (.pr.number | tostring) + "</a>" else "Pending" end) + "</td>" +
+            "<td>" + (.codeOwners // "N/A") + "</td>" +
             "</tr>"
           ')
 
@@ -277,13 +294,13 @@ jobs:
           <html>
           <head>
             <style>
-              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #24292e; max-width: 1200px; margin: 0 auto; padding: 20px; }
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #24292e; max-width: 1400px; margin: 0 auto; padding: 20px; }
               .header { border-bottom: 3px solid #0366d6; padding-bottom: 20px; margin-bottom: 30px; }
               .header h1 { margin: 0; color: #0366d6; font-size: 24px; }
               .header .date { color: #586069; font-size: 14px; margin-top: 5px; }
-              table { width: 100%; border-collapse: collapse; margin: 20px 0; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-              th { background: #f6f8fa; border: 1px solid #d1d5da; padding: 12px; text-align: left; font-weight: 600; color: #24292e; font-size: 14px; }
-              td { border: 1px solid #d1d5da; padding: 12px; font-size: 13px; }
+              table { width: 100%; border-collapse: collapse; margin: 20px 0; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); font-size: 12px; }
+              th { background: #f6f8fa; border: 1px solid #d1d5da; padding: 10px 8px; text-align: left; font-weight: 600; color: #24292e; font-size: 13px; }
+              td { border: 1px solid #d1d5da; padding: 10px 8px; font-size: 12px; }
               tr:hover { background: #f6f8fa; }
               .status-success { color: #28a745; font-weight: 600; }
               .status-failed { color: #d73a49; font-weight: 600; }
@@ -310,12 +327,14 @@ jobs:
             <table>
               <thead>
                 <tr>
-                  <th>Connector Repository</th>
+                  <th>Connector</th>
                   <th>Specification</th>
-                  <th>Version</th>
+                  <th>OpenAPI Version</th>
+                  <th>Expected Version</th>
                   <th>Change Type</th>
                   <th>Build Status</th>
                   <th>Pull Request</th>
+                  <th>Code Owners</th>
                 </tr>
               </thead>
               <tbody>
@@ -338,7 +357,6 @@ jobs:
         run: |
           if [ -z "${{ secrets.GMAIL_USERNAME }}" ] || [ -z "${{ secrets.GMAIL_APP_PASSWORD }}" ]; then
             echo "⚠️ WARNING: Email secrets (GMAIL_USERNAME or GMAIL_APP_PASSWORD) are not configured"
-            echo "Please add these secrets to the repository to enable email notifications"
             echo "email_configured=false" >> $GITHUB_OUTPUT
           else
             echo "✅ Email secrets are configured"
@@ -367,9 +385,7 @@ jobs:
           if [ "${{ steps.send_email.outcome }}" == "success" ]; then
             echo "✅ Email sent successfully to t37714687@gmail.com"
           else
-            echo "⚠️ WARNING: Email sending failed. Check GMAIL_USERNAME and GMAIL_APP_PASSWORD secrets."
-            echo "Email subject would have been: ${{ steps.generate_email.outputs.email_subject }}"
-            echo "Connector data is still available in artifacts"
+            echo "⚠️ WARNING: Email sending failed"
           fi
 
       - name: Upload artifacts
