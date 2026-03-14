@@ -164,22 +164,28 @@ jobs:
         run: |
           echo "Collecting PR information from all triggered connectors..."
 
+          # Get workflow start time (only PRs created after this are from this run)
+          WORKFLOW_START_TIME=$(date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          echo "Looking for PRs created after: $WORKFLOW_START_TIME"
+
           echo "[]" > connector_prs.json
 
           while IFS='|' read -r REPO SPEC VERSION; do
             echo ""
             echo "Checking repository: $REPO"
 
-            # Get the most recent auto-generated PR
+            # Get PRs created in the last 30 minutes (more than enough for our workflow)
             PR_DATA=$(gh pr list \
               --repo "$REPO" \
               --state all \
-              --limit 10 \
+              --limit 20 \
               --json number,title,url,state,createdAt,body \
-              --jq '[.[] | select(.title | contains("Auto-generated connector"))] | sort_by(.createdAt) | reverse | .[0]' 2>/dev/null || echo "null")
+              --jq "[.[] | select(.title | contains(\"Auto-generated connector\")) | select(.createdAt > \"$WORKFLOW_START_TIME\")] | sort_by(.createdAt) | reverse | .[0]" 2>/dev/null || echo "null")
 
             if [ -n "$PR_DATA" ] && [ "$PR_DATA" != "null" ] && [ "$PR_DATA" != "{}" ]; then
-              echo "  Found auto-generated PR for $REPO"
+              PR_NUMBER=$(echo "$PR_DATA" | jq -r '.number')
+              PR_CREATED_AT=$(echo "$PR_DATA" | jq -r '.createdAt')
+              echo "  Found PR #$PR_NUMBER for $REPO (created at $PR_CREATED_AT)"
 
               # Extract change type from PR title
               CHANGE_TYPE=$(echo "$PR_DATA" | jq -r '.title' | grep -oE '\[(MAJOR|MINOR|PATCH)\]' | tr -d '[]' || echo "UNKNOWN")
@@ -198,9 +204,9 @@ jobs:
               NEW_VERSION=$(echo "$PR_BODY" | grep -oP 'New Version.*?`\K[^`]+' || echo "")
 
               # Extract code owners from PR body
-              CODE_OWNERS=$(echo "$PR_BODY" | grep -oP 'Code Owners:.*?\K@[\w-]+(,\s*@[\w-]+)*' | tr -d '@' | tr ',' ' ' || echo "")
+              CODE_OWNERS=$(echo "$PR_BODY" | grep -oP 'Code Owners:.*?\K@[\w-]+(,\s*@[\w-]+)*' | tr -d '@' | sed 's/,/, /g' || echo "")
 
-              # Extract connector name from repo (orgBBalLib/module-ballerinax-hubspot.crm.associations -> hubspot.crm.associations)
+              # Extract connector name from repo
               CONNECTOR_NAME=$(echo "$REPO" | sed 's|^orgBBalLib/module-ballerinax-||')
 
               # Build connector info JSON
@@ -229,7 +235,11 @@ jobs:
               jq --argjson item "$CONNECTOR_INFO" '. += [$item]' connector_prs.json > tmp.json && mv tmp.json connector_prs.json
               echo "  ✅ Added PR info for $REPO"
             else
-              echo "  ⚠️ No auto-generated PR found for $REPO - may still be processing"
+              echo "  ⚠️ No recent auto-generated PR found for $REPO"
+              echo "  This could mean:"
+              echo "    - The workflow is still running"
+              echo "    - The workflow failed before creating a PR"
+              echo "    - The PR was created more than 30 minutes ago (shouldn't happen)"
 
               CONNECTOR_NAME=$(echo "$REPO" | sed 's|^orgBBalLib/module-ballerinax-||')
 
@@ -243,11 +253,11 @@ jobs:
                   connectorName: $connectorName,
                   specification: $spec,
                   openapiVersion: $version,
-                  changeType: "PROCESSING",
-                  buildStatus: "In Progress",
-                  expectedVersion: "",
-                  codeOwners: "",
-                  pr: {number: 0, title: "Processing", url: "", state: "processing"}
+                  changeType: "PENDING",
+                  buildStatus: "Not Started",
+                  expectedVersion: "N/A",
+                  codeOwners: "N/A",
+                  pr: {number: 0, title: "Pending", url: "", state: "pending"}
                 }')
 
               jq --argjson item "$CONNECTOR_INFO" '. += [$item]' connector_prs.json > tmp.json && mv tmp.json connector_prs.json
