@@ -2,11 +2,6 @@ import ballerina/file;
 import ballerina/io;
 import ballerina/regex;
 
-type ChangelogEntry record {|
-    string changeType;
-    string[] items;
-|};
-
 function parsePrDescription(string prDescription) returns map<string[]>|error {
     map<string[]> changes = {
         "Added": [],
@@ -20,20 +15,25 @@ function parsePrDescription(string prDescription) returns map<string[]>|error {
     foreach string line in lines {
         string trimmed = line.trim();
 
+        // Detect section headers (both with and without ###)
         if trimmed == "Breaking Changes" || trimmed == "### Breaking Changes" {
             currentSection = "Changed";
+            io:println("Found Breaking Changes section");
         } else if trimmed == "New Features" || trimmed == "### New Features" {
             currentSection = "Added";
+            io:println("Found New Features section");
         } else if trimmed == "Improvements" || trimmed == "### Improvements" {
             currentSection = "Fixed";
-        } else if trimmed.startsWith("*") || trimmed.startsWith("-") {
-            string item = regex:replaceAll(trimmed, "^[*\\-]\\s*", "");
-            item = item.trim();
+            io:println("Found Improvements section");
+        } else if trimmed.startsWith("- ") {
+            // Extract item (remove leading "- ")
+            string item = trimmed.substring(2).trim();
 
             if item.length() > 0 && currentSection.length() > 0 {
                 string[] existing = changes[currentSection] ?: [];
                 existing.push(item);
                 changes[currentSection] = existing;
+                io:println(string `Added to ${currentSection}: ${item.substring(0, 50)}...`);
             }
         }
     }
@@ -88,12 +88,20 @@ function findChangelogFile() returns string|error? {
 
 function updateChangelog(string prDescription) returns error? {
     io:println("Updating CHANGELOG.md...");
+    io:println(string `PR Description length: ${prDescription.length()} chars`);
+    io:println("First 200 chars of PR description:");
+    io:println(prDescription.substring(0, prDescription.length() < 200 ? prDescription.length() : 200));
 
     map<string[]> changes = check parsePrDescription(prDescription);
 
     int totalChanges = (changes["Added"] ?: []).length() +
                        (changes["Changed"] ?: []).length() +
                        (changes["Fixed"] ?: []).length();
+
+    io:println(string `Total changes found: ${totalChanges}`);
+    io:println(string `Added: ${(changes["Added"] ?: []).length()}`);
+    io:println(string `Changed: ${(changes["Changed"] ?: []).length()}`);
+    io:println(string `Fixed: ${(changes["Fixed"] ?: []).length()}`);
 
     if totalChanges == 0 {
         io:println("No changelog entries found in PR description");
@@ -108,6 +116,7 @@ function updateChangelog(string prDescription) returns error? {
     string newUnreleasedSection = generateUnreleasedSection(changes);
 
     if existingFile is string {
+        io:println("Updating existing CHANGELOG.md");
         string content = check io:fileReadString(changelogPath);
         string[] lines = regex:split(content, "\n");
 
@@ -180,6 +189,7 @@ function updateChangelog(string prDescription) returns error? {
             io:println("Added [Unreleased] section to existing CHANGELOG.md");
         }
     } else {
+        io:println("Creating new CHANGELOG.md");
         string changelogTemplate = string `# Change Log
 
 This file contains all the notable changes done to the Ballerina connector through the releases.
