@@ -330,7 +330,7 @@ jobs:
                   <th>Connector</th>
                   <th>Specification</th>
                   <th>OpenAPI Version</th>
-                  <th>Expected Version</th>
+                  <th>Expected Connector Version</th>
                   <th>Change Type</th>
                   <th>Build Status</th>
                   <th>Pull Request</th>
