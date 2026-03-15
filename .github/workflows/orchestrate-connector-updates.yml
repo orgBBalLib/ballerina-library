@@ -21,6 +21,14 @@ jobs:
       - name: Checkout ballerina-library
         uses: actions/checkout@v4
 
+      - name: Capture workflow start time
+        id: start_time
+        run: |
+          # Capture the exact start time of this workflow run
+          START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "workflow_start_time=$START_TIME" >> $GITHUB_OUTPUT
+          echo "Workflow started at: $START_TIME"
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -53,6 +61,7 @@ jobs:
         id: trigger_connectors
         run: |
           echo "Triggering connector regeneration for all connectors..."
+          echo "Workflow start time: ${{ steps.start_time.outputs.workflow_start_time }}"
 
           > triggered_connectors.txt
 
@@ -94,6 +103,7 @@ jobs:
           GH_TOKEN: ${{ secrets.BALLERINA_BOT_TOKEN }}
         run: |
           echo "Waiting for connector updates to process..."
+          echo "Looking for PRs created after: ${{ steps.start_time.outputs.workflow_start_time }}"
 
           TOTAL_CONNECTORS=$(wc -l < triggered_connectors.txt)
           echo "Monitoring $TOTAL_CONNECTORS connector repositories..."
@@ -116,17 +126,17 @@ jobs:
             echo "=== Check at $((INITIAL_WAIT + ELAPSED)) seconds total elapsed ==="
 
             while IFS='|' read -r REPO SPEC VERSION; do
-              PR_INFO=$(gh pr list \
+              # Check for PRs created after workflow start time
+              PR_COUNT=$(gh pr list \
                 --repo "$REPO" \
-                --state open \
-                --limit 5 \
-                --json number,title,createdAt \
-                --jq '.[] | select(.title | contains("Auto-generated connector"))' 2>/dev/null || echo "")
+                --state all \
+                --limit 20 \
+                --json createdAt,title \
+                --jq "[.[] | select(.title | contains(\"Auto-generated connector\")) | select(.createdAt > \"${{ steps.start_time.outputs.workflow_start_time }}\")] | length" 2>/dev/null || echo "0")
 
-              if [ -n "$PR_INFO" ]; then
+              if [ "$PR_COUNT" -gt 0 ]; then
                 COMPLETED=$((COMPLETED + 1))
-                PR_NUMBER=$(echo "$PR_INFO" | jq -r '.number' | head -1)
-                echo "  ✅ $REPO - PR #$PR_NUMBER found"
+                echo "  ✅ $REPO - PR found"
               else
                 echo "  ⏳ $REPO - Waiting..."
               fi
@@ -163,10 +173,7 @@ jobs:
           GH_TOKEN: ${{ secrets.BALLERINA_BOT_TOKEN }}
         run: |
           echo "Collecting PR information from all triggered connectors..."
-
-          # Get workflow start time (only PRs created after this are from this run)
-          WORKFLOW_START_TIME=$(date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
-          echo "Looking for PRs created after: $WORKFLOW_START_TIME"
+          echo "Looking for PRs created after: ${{ steps.start_time.outputs.workflow_start_time }}"
 
           echo "[]" > connector_prs.json
 
@@ -174,18 +181,18 @@ jobs:
             echo ""
             echo "Checking repository: $REPO"
 
-            # Get PRs created in the last 30 minutes (more than enough for our workflow)
+            # Get PRs created after workflow start time
             PR_DATA=$(gh pr list \
               --repo "$REPO" \
               --state all \
               --limit 20 \
               --json number,title,url,state,createdAt,body \
-              --jq "[.[] | select(.title | contains(\"Auto-generated connector\")) | select(.createdAt > \"$WORKFLOW_START_TIME\")] | sort_by(.createdAt) | reverse | .[0]" 2>/dev/null || echo "null")
+              --jq "[.[] | select(.title | contains(\"Auto-generated connector\")) | select(.createdAt > \"${{ steps.start_time.outputs.workflow_start_time }}\")] | sort_by(.createdAt) | reverse | .[0]" 2>/dev/null || echo "null")
 
             if [ -n "$PR_DATA" ] && [ "$PR_DATA" != "null" ] && [ "$PR_DATA" != "{}" ]; then
               PR_NUMBER=$(echo "$PR_DATA" | jq -r '.number')
               PR_CREATED_AT=$(echo "$PR_DATA" | jq -r '.createdAt')
-              echo "  Found PR #$PR_NUMBER for $REPO (created at $PR_CREATED_AT)"
+              echo "  ✅ Found PR #$PR_NUMBER for $REPO (created at $PR_CREATED_AT)"
 
               # Extract change type from PR title
               CHANGE_TYPE=$(echo "$PR_DATA" | jq -r '.title' | grep -oE '\[(MAJOR|MINOR|PATCH)\]' | tr -d '[]' || echo "UNKNOWN")
@@ -235,11 +242,8 @@ jobs:
               jq --argjson item "$CONNECTOR_INFO" '. += [$item]' connector_prs.json > tmp.json && mv tmp.json connector_prs.json
               echo "  ✅ Added PR info for $REPO"
             else
-              echo "  ⚠️ No recent auto-generated PR found for $REPO"
-              echo "  This could mean:"
-              echo "    - The workflow is still running"
-              echo "    - The workflow failed before creating a PR"
-              echo "    - The PR was created more than 30 minutes ago (shouldn't happen)"
+              echo "  ⚠️ No PR found for $REPO created after ${{ steps.start_time.outputs.workflow_start_time }}"
+              echo "  The workflow may have failed before creating a PR"
 
               CONNECTOR_NAME=$(echo "$REPO" | sed 's|^orgBBalLib/module-ballerinax-||')
 
@@ -253,11 +257,11 @@ jobs:
                   connectorName: $connectorName,
                   specification: $spec,
                   openapiVersion: $version,
-                  changeType: "PENDING",
-                  buildStatus: "Not Started",
+                  changeType: "FAILED",
+                  buildStatus: "Workflow Failed",
                   expectedVersion: "N/A",
                   codeOwners: "N/A",
-                  pr: {number: 0, title: "Pending", url: "", state: "pending"}
+                  pr: {number: 0, title: "Not Created", url: "", state: "failed"}
                 }')
 
               jq --argjson item "$CONNECTOR_INFO" '. += [$item]' connector_prs.json > tmp.json && mv tmp.json connector_prs.json
@@ -282,8 +286,8 @@ jobs:
             "<td><code>" + .openapiVersion + "</code></td>" +
             "<td><code>" + (.expectedVersion // "N/A") + "</code></td>" +
             "<td><span class=\"change-" + (.changeType | ascii_downcase) + "\">" + .changeType + "</span></td>" +
-            "<td>" + (if .buildStatus == "FAILED" then "<span class=\"status-failed\">❌ FAILED</span>" elif .buildStatus == "In Progress" then "⏳ In Progress" else "<span class=\"status-success\">✅ Success</span>" end) + "</td>" +
-            "<td>" + (if .pr.number > 0 then "<a href=\"" + .pr.url + "\">#" + (.pr.number | tostring) + "</a>" else "Pending" end) + "</td>" +
+            "<td>" + (if .buildStatus == "FAILED" or .buildStatus == "Workflow Failed" then "<span class=\"status-failed\">❌ FAILED</span>" elif .buildStatus == "In Progress" then "⏳ In Progress" else "<span class=\"status-success\">✅ Success</span>" end) + "</td>" +
+            "<td>" + (if .pr.number > 0 then "<a href=\"" + .pr.url + "\">#" + (.pr.number | tostring) + "</a>" else "Not Created" end) + "</td>" +
             "<td>" + (.codeOwners // "N/A") + "</td>" +
             "</tr>"
           ')
@@ -317,7 +321,7 @@ jobs:
               .change-major { background: #d73a49; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
               .change-minor { background: #0366d6; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
               .change-patch { background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
-              .change-processing, .change-unknown { background: #6c757d; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+              .change-failed, .change-pending, .change-unknown { background: #6c757d; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
               a { color: #0366d6; text-decoration: none; }
               a:hover { text-decoration: underline; }
               .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #d1d5da; color: #586069; font-size: 12px; }
@@ -424,7 +428,7 @@ jobs:
           if [ -f "connector_prs.json" ]; then
             COLLECTED=$(jq 'length' connector_prs.json)
             COMPLETED=$(jq '[.[] | select(.pr.number > 0)] | length' connector_prs.json)
-            FAILED=$(jq '[.[] | select(.buildStatus == "FAILED")] | length' connector_prs.json)
+            FAILED=$(jq '[.[] | select(.buildStatus == "FAILED" or .buildStatus == "Workflow Failed")] | length' connector_prs.json)
 
             echo "**Collected:** $COLLECTED connector reports" >> $GITHUB_STEP_SUMMARY
             echo "**Completed:** $COMPLETED with PRs created" >> $GITHUB_STEP_SUMMARY
