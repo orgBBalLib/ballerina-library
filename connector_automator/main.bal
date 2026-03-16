@@ -496,7 +496,7 @@ function runFullPipeline(string... args) returns error? {
         io:println("ℹ  Quiet mode enabled");
     }
     if regenerate {
-        io:println("ℹ  Regeneration mode: Smart test recovery enabled");
+        io:println("ℹ  Regeneration mode: Smart test/example recovery enabled");
     }
     if licenseFile is string {
         string licensePath = licenseFile.substring(8); // Remove "license=" prefix
@@ -842,7 +842,7 @@ function printPipelineHeader(string openApiSpec, string outputDir, boolean quiet
     io:println("");
     io:println(sep);
     if regenerate {
-        io:println("Connector Regeneration Pipeline (Smart Test Recovery)");
+        io:println("Connector Regeneration Pipeline (Smart Test/Example Recovery)");
     } else {
         io:println("Connector Automation Pipeline");
     }
@@ -859,7 +859,9 @@ function printPipelineHeader(string openApiSpec, string outputDir, boolean quiet
         io:println("  4. If build fails:");
         io:println("     Phase 1: Try to fix existing test files (preserves test logic)");
         io:println("     Phase 2: If Phase 1 fails, regenerate tests from scratch");
-        io:println("  5. Generate/regenerate examples");
+        io:println("  5. Regenerate examples with fallback:");
+        io:println("     Phase 1: Try to fix existing examples (preserves example logic)");
+        io:println("     Phase 2: If Phase 1 fails, regenerate examples from scratch");
         io:println("  6. Generate documentation");
     } else {
         io:println("Pipeline Steps:");
