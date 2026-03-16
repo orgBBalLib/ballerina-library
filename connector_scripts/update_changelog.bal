@@ -2,6 +2,15 @@ import ballerina/file;
 import ballerina/io;
 import ballerina/regex;
 
+// Safe substring helper function
+function safeSubstring(string str, int startIndex, int endIndex) returns string {
+    int actualEnd = endIndex < str.length() ? endIndex : str.length();
+    if actualEnd <= startIndex {
+        return str;
+    }
+    return str.substring(startIndex, actualEnd);
+}
+
 function parsePrDescription(string prDescription) returns map<string[]>|error {
     map<string[]> changes = {
         "Added": [],
@@ -33,7 +42,13 @@ function parsePrDescription(string prDescription) returns map<string[]>|error {
                 string[] existing = changes[currentSection] ?: [];
                 existing.push(item);
                 changes[currentSection] = existing;
-                io:println(string `Added to ${currentSection}: ${item.substring(0, 50)}...`);
+
+                // Use safe substring to avoid errors on short strings
+                string preview = safeSubstring(item, 0, 50);
+                if item.length() > 50 {
+                    preview = preview + "...";
+                }
+                io:println(string `Added to ${currentSection}: ${preview}`);
             }
         }
     }
@@ -90,7 +105,10 @@ function updateChangelog(string prDescription) returns error? {
     io:println("Updating CHANGELOG.md...");
     io:println(string `PR Description length: ${prDescription.length()} chars`);
     io:println("First 200 chars of PR description:");
-    io:println(prDescription.substring(0, prDescription.length() < 200 ? prDescription.length() : 200));
+
+    // Safe substring for PR description preview
+    string preview = safeSubstring(prDescription, 0, 200);
+    io:println(preview);
 
     map<string[]> changes = check parsePrDescription(prDescription);
 
