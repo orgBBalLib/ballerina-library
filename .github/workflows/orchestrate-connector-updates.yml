@@ -59,8 +59,6 @@ jobs:
 
       - name: Trigger all connector regenerations
         id: trigger_connectors
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           echo "Triggering connector regeneration for all connectors..."
           echo "Workflow start time: ${{ steps.start_time.outputs.workflow_start_time }}"
@@ -467,3 +465,4 @@ jobs:
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Email Status:** ${{ steps.send_email.outcome }}" >> $GITHUB_STEP_SUMMARY
+
