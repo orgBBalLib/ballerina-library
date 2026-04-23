@@ -278,6 +278,31 @@ jobs:
         if: steps.trigger_connectors.outputs.triggered_count > 0
         id: generate_email
         run: |
+          # Write malformed specs payload to file to avoid shell interpolation limits
+          echo '${{ toJson(github.event.client_payload.malformed_specs) }}' > /tmp/malformed.json
+
+          # Build malformed specs HTML section
+          MALFORMED_SECTION=""
+          MALFORMED_COUNT=$(jq 'if . == null then 0 else length end' /tmp/malformed.json)
+          if [ "$MALFORMED_COUNT" -gt 0 ]; then
+            MALFORMED_ROWS=""
+            while IFS= read -r item; do
+              NAME=$(echo "$item" | jq -r '.name')
+              VERSION=$(echo "$item" | jq -r '.version')
+              REASON=$(echo "$item" | jq -r '.reason')
+              MALFORMED_ROWS="${MALFORMED_ROWS}<tr><td><strong>${NAME}</strong></td><td><code>${VERSION}</code></td><td>${REASON}</td></tr>"
+            done < <(jq -c '.[]' /tmp/malformed.json)
+
+            MALFORMED_SECTION='<div class="malformed-box">
+              <h3>⚠️ Malformed Specs Detected</h3>
+              <p>The following specs were found via heuristic fallback but were rejected by the Swagger parser — connectors were <strong>NOT</strong> generated for these:</p>
+              <table>
+                <thead><tr><th>Spec Name</th><th>Version</th><th>Rejection Reason</th></tr></thead>
+                <tbody>'"${MALFORMED_ROWS}"'</tbody>
+              </table>
+            </div>'
+          fi
+
           # Generate HTML table rows from connector_prs.json
           TABLE_ROWS=$(cat connector_prs.json | jq -r '.[] |
             "<tr>" +
@@ -327,6 +352,8 @@ jobs:
               .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #d1d5da; color: #586069; font-size: 12px; }
               .summary-box { background: #f6f8fa; border: 1px solid #d1d5da; border-radius: 6px; padding: 15px; margin: 20px 0; }
               .summary-box h3 { margin: 0 0 10px 0; font-size: 16px; }
+              .malformed-box { background: #fff8e1; border: 1px solid #f0ad4e; border-radius: 6px; padding: 15px; margin: 20px 0; }
+              .malformed-box h3 { margin: 0 0 10px 0; font-size: 16px; color: #856404; }
             </style>
           </head>
           <body>
@@ -355,6 +382,7 @@ jobs:
           ${TABLE_ROWS}
               </tbody>
             </table>
+          ${MALFORMED_SECTION}
             <div class="footer">
               <p>This is an automated message from the OpenAPI Dependabot system.</p>
               <p>For questions or issues, please contact the Ballerina team.</p>
