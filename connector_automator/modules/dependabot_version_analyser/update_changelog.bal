@@ -2,7 +2,6 @@ import ballerina/file;
 import ballerina/io;
 import ballerina/regex;
 
-// Safe substring helper function
 function safeSubstring(string str, int startIndex, int endIndex) returns string {
     int actualEnd = endIndex < str.length() ? endIndex : str.length();
     if actualEnd <= startIndex {
@@ -24,7 +23,6 @@ function parsePrDescription(string prDescription) returns map<string[]>|error {
     foreach string line in lines {
         string trimmed = line.trim();
 
-        // Detect section headers (both with and without ###)
         if trimmed == "Breaking Changes" || trimmed == "### Breaking Changes" {
             currentSection = "Changed";
             io:println("Found Breaking Changes section");
@@ -35,7 +33,6 @@ function parsePrDescription(string prDescription) returns map<string[]>|error {
             currentSection = "Fixed";
             io:println("Found Improvements section");
         } else if trimmed.startsWith("- ") {
-            // Extract item (remove leading "- ")
             string item = trimmed.substring(2).trim();
 
             if item.length() > 0 && currentSection.length() > 0 {
@@ -43,7 +40,6 @@ function parsePrDescription(string prDescription) returns map<string[]>|error {
                 existing.push(item);
                 changes[currentSection] = existing;
 
-                // Use safe substring to avoid errors on short strings
                 string preview = safeSubstring(item, 0, 50);
                 if item.length() > 50 {
                     preview = preview + "...";
@@ -106,7 +102,6 @@ function updateChangelog(string prDescription) returns error? {
     io:println(string `PR Description length: ${prDescription.length()} chars`);
     io:println("First 200 chars of PR description:");
 
-    // Safe substring for PR description preview
     string preview = safeSubstring(prDescription, 0, 200);
     io:println(preview);
 
@@ -223,6 +218,6 @@ ${newUnreleasedSection}`;
     io:println(string `Added ${totalChanges} changelog entries`);
 }
 
-public function main(string prDescription) returns error? {
+public function runUpdateChangelog(string prDescription) returns error? {
     check updateChangelog(prDescription);
 }

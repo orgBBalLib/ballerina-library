@@ -1,7 +1,0 @@
-[package]
-org = "ballerina"
-name = "connector_scripts"
-version = "1.0.0"
-
-[build-options]
-observabilityIncluded = true
