@@ -70,8 +70,8 @@ REQUIRED RESPONSE FORMAT (JSON):
         return error LLMServiceError("Failed to generate batch descriptions", response);
     }
 
-    // Parse JSON response
-    json|error jsonResult = response.fromJsonString();
+    // Parse JSON response (strip any markdown fences the LLM may have added)
+    json|error jsonResult = stripJsonFences(response).fromJsonString();
     if jsonResult is error {
         return error LLMServiceError("Failed to parse batch response JSON", jsonResult);
     }
@@ -163,7 +163,7 @@ REQUIRED RESPONSE FORMAT (JSON):
         return error LLMServiceError("Failed to generate batch operationIds", response);
     }
 
-    json|error jsonResult = response.fromJsonString();
+    json|error jsonResult = stripJsonFences(response).fromJsonString();
     if jsonResult is error {
         return error LLMServiceError("Failed to parse batch operationId response JSON", jsonResult);
     }
@@ -249,7 +249,7 @@ REQUIRED RESPONSE FORMAT (JSON):
         return error LLMServiceError("Failed to generate batch schema names", response);
     }
 
-    json|error jsonResult = response.fromJsonString();
+    json|error jsonResult = stripJsonFences(response).fromJsonString();
     if jsonResult is error {
         return error LLMServiceError("Failed to parse batch rename response JSON", jsonResult);
     }
@@ -271,4 +271,19 @@ REQUIRED RESPONSE FORMAT (JSON):
         }
     }
     return error LLMServiceError("Invalid batch rename response format");
+}
+
+// Strip markdown code fences that the LLM sometimes wraps around JSON responses.
+function stripJsonFences(string raw) returns string {
+    string trimmed = raw.trim();
+    if trimmed.startsWith("```") {
+        int? newline = trimmed.indexOf("\n");
+        if newline is int {
+            trimmed = trimmed.substring(newline + 1).trim();
+        }
+    }
+    if trimmed.endsWith("```") {
+        trimmed = trimmed.substring(0, trimmed.length() - 3).trim();
+    }
+    return trimmed;
 }

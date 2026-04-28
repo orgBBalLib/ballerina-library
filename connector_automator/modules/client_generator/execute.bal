@@ -154,14 +154,15 @@ public function generateBallerinaClient(string specPath, string outputDir, Clien
         }
         io:println("Ballerina client generated successfully");
 
-        // Re-apply code-level sanitations so the version analyser sees a clean diff
+        // Re-apply code-level sanitations so the version analyser sees a clean diff.
+        // sanitations.md lives in the same directory as the spec file.
         io:println("Applying code sanitations from sanitations.md...");
-        string sanitationsPath = outputDir + "/docs/spec/sanitations.md";
-        error? sanitationErr = applyCodeSanitations(outputDir + "/ballerina", sanitationsPath, config.quietMode);
+        int? lastSlash = specPath.lastIndexOf("/");
+        string specDir = lastSlash is int ? specPath.substring(0, lastSlash) : ".";
+        string sanitationsPath = specDir + "/sanitations.md";
+        error? sanitationErr = applyCodeSanitations(outputDir, sanitationsPath, config.quietMode);
         if sanitationErr is error {
             io:println(string `⚠  Code sanitation step failed: ${sanitationErr.message()}`);
-        } else {
-            io:println("✓ Code sanitations applied");
         }
 
         io:println(string `Generated files are available in: ${outputDir}`);
