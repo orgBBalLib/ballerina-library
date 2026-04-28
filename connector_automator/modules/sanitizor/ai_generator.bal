@@ -1,6 +1,6 @@
 import connector_automator.utils;
 
-public function generateDescriptionsBatch(DescriptionRequest[] requests, string apiContext) returns BatchDescriptionResponse[]|LLMServiceError {
+public function generateDescriptionsBatch(DescriptionRequest[] requests, string apiContext, string previousSanitations = "") returns BatchDescriptionResponse[]|LLMServiceError {
     if !utils:isAIServiceInitialized() {
         return error LLMServiceError("LLM service not initialized");
     }
@@ -29,11 +29,15 @@ ${i + 1}. ID: ${req.id}
 `;
     }
 
+    string sanitationsContext = previousSanitations.length() > 0
+        ? string `\nEXISTING SANITATION CONVENTIONS (maintain the same documentation style):\n${previousSanitations}\n`
+        : "";
+
     string prompt = string `You are an API documentation expert. Generate concise, professional descriptions for the following API elements.
 
 API CONTEXT:
 ${apiContext}
-
+${sanitationsContext}
 REQUESTS TO PROCESS:
 ${requestsSection}
 
@@ -92,7 +96,7 @@ REQUIRED RESPONSE FORMAT (JSON):
 }
 
 // Process multiple operationId requests in a single LLM call
-public function generateOperationIdsBatch(OperationIdRequest[] requests, string apiContext, string[] existingOperationIds) returns BatchOperationIdResponse[]|LLMServiceError {
+public function generateOperationIdsBatch(OperationIdRequest[] requests, string apiContext, string[] existingOperationIds, string previousSanitations = "") returns BatchOperationIdResponse[]|LLMServiceError {
     if !utils:isAIServiceInitialized() {
         return error LLMServiceError("LLM service not initialized");
     }
@@ -117,11 +121,15 @@ ${i + 1}. ID: ${req.id}
 
     string existingIdsStr = string:'join(", ", ...existingOperationIds);
 
+    string opSanitationsContext = previousSanitations.length() > 0
+        ? string `\nEXISTING SANITATION CONVENTIONS (follow the same operationId naming style as used previously):\n${previousSanitations}\n`
+        : "";
+
     string prompt = string `You are an expert in REST API design. Generate meaningful, unique camelCase operationIds for these API operations.
 
 API CONTEXT:
 ${apiContext}
-
+${opSanitationsContext}
 EXISTING OPERATION IDS (avoid conflicts):
 ${existingIdsStr}
 
@@ -179,7 +187,7 @@ REQUIRED RESPONSE FORMAT (JSON):
     return error LLMServiceError("Invalid batch operationId response format");
 }
 
-public function generateSchemaNamesBatch(SchemaRenameRequest[] requests, string apiContext, string[] existingNames) returns BatchRenameResponse[]|LLMServiceError {
+public function generateSchemaNamesBatch(SchemaRenameRequest[] requests, string apiContext, string[] existingNames, string previousSanitations = "") returns BatchRenameResponse[]|LLMServiceError {
     if !utils:isAIServiceInitialized() {
         return error LLMServiceError("LLM service not initialized");
     }
@@ -200,11 +208,15 @@ ${i + 1}. Original: ${req.originalName}
 
     string existingNamesStr = string:'join(", ", ...existingNames);
 
+    string schemaSanitationsContext = previousSanitations.length() > 0
+        ? string `\nEXISTING SANITATION CONVENTIONS (follow the same schema naming style as used previously):\n${previousSanitations}\n`
+        : "";
+
     string prompt = string `You are an expert in naming OpenAPI schemas. Generate meaningful, unique PascalCase names for these schemas.
 
 API CONTEXT:
 ${apiContext}
-
+${schemaSanitationsContext}
 EXISTING SCHEMA NAMES (avoid conflicts):
 ${existingNamesStr}
 

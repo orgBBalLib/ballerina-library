@@ -6,12 +6,12 @@ import ballerina/log;
 configurable RetryConfig retryConfig = {};
 
 // Process multiple description requests with retry and exponential backoff
-public function generateDescriptionsBatchWithRetry(DescriptionRequest[] requests, string apiContext, boolean quietMode = false, RetryConfig? config = ()) returns BatchDescriptionResponse[]|LLMServiceError {
+public function generateDescriptionsBatchWithRetry(DescriptionRequest[] requests, string apiContext, boolean quietMode = false, RetryConfig? config = (), string previousSanitations = "") returns BatchDescriptionResponse[]|LLMServiceError {
     RetryConfig retryConf = config ?: retryConfig;
 
     int attempt = 0;
     while attempt <= retryConf.maxRetries {
-        BatchDescriptionResponse[]|LLMServiceError result = generateDescriptionsBatch(requests, apiContext);
+        BatchDescriptionResponse[]|LLMServiceError result = generateDescriptionsBatch(requests, apiContext, previousSanitations);
 
         if result is BatchDescriptionResponse[] {
             if !quietMode && attempt > 0 {
@@ -54,12 +54,12 @@ public function generateDescriptionsBatchWithRetry(DescriptionRequest[] requests
 }
 
 // Generate missing operationIds with retry and exponential backoff
-public function generateOperationIdsBatchWithRetry(OperationIdRequest[] requests, string apiContext, string[] existingOperationIds, boolean quietMode = false, RetryConfig? config = ()) returns BatchOperationIdResponse[]|LLMServiceError {
+public function generateOperationIdsBatchWithRetry(OperationIdRequest[] requests, string apiContext, string[] existingOperationIds, boolean quietMode = false, RetryConfig? config = (), string previousSanitations = "") returns BatchOperationIdResponse[]|LLMServiceError {
     RetryConfig retryConf = config ?: retryConfig;
 
     int attempt = 0;
     while attempt <= retryConf.maxRetries {
-        BatchOperationIdResponse[]|LLMServiceError result = generateOperationIdsBatch(requests, apiContext, existingOperationIds);
+        BatchOperationIdResponse[]|LLMServiceError result = generateOperationIdsBatch(requests, apiContext, existingOperationIds, previousSanitations);
 
         if result is BatchOperationIdResponse[] {
             if attempt > 0 {
@@ -95,12 +95,12 @@ public function generateOperationIdsBatchWithRetry(OperationIdRequest[] requests
     return error LLMServiceError("Unexpected error in retry logic");
 }
 
-public function generateSchemaNamesBatchWithRetry(SchemaRenameRequest[] requests, string apiContext, string[] existingNames, boolean quietMode = false, RetryConfig? config = ()) returns BatchRenameResponse[]|LLMServiceError {
+public function generateSchemaNamesBatchWithRetry(SchemaRenameRequest[] requests, string apiContext, string[] existingNames, boolean quietMode = false, RetryConfig? config = (), string previousSanitations = "") returns BatchRenameResponse[]|LLMServiceError {
     RetryConfig retryConf = config ?: retryConfig;
 
     int attempt = 0;
     while attempt <= retryConf.maxRetries {
-        BatchRenameResponse[]|LLMServiceError result = generateSchemaNamesBatch(requests, apiContext, existingNames);
+        BatchRenameResponse[]|LLMServiceError result = generateSchemaNamesBatch(requests, apiContext, existingNames, previousSanitations);
 
         if result is BatchRenameResponse[] {
             if attempt > 0 {
@@ -137,7 +137,7 @@ public function generateSchemaNamesBatchWithRetry(SchemaRenameRequest[] requests
 }
 
 // Batch processing to include parameters and operations
-public function addMissingDescriptionsBatchWithRetry(string specFilePath, int batchSize = 20, boolean quietMode = false, RetryConfig? config = ()) returns int|LLMServiceError {
+public function addMissingDescriptionsBatchWithRetry(string specFilePath, int batchSize = 20, boolean quietMode = false, RetryConfig? config = (), string previousSanitations = "") returns int|LLMServiceError {
     if !quietMode {
         log:printInfo("Processing OpenAPI spec for missing descriptions",
                 specPath = specFilePath, batchSize = batchSize);
@@ -202,7 +202,7 @@ public function addMissingDescriptionsBatchWithRetry(string specFilePath, int ba
                         batchSize = batch.length());
             }
 
-            BatchDescriptionResponse[]|LLMServiceError batchResult = generateDescriptionsBatchWithRetry(batch, apiContext, quietMode, config);
+            BatchDescriptionResponse[]|LLMServiceError batchResult = generateDescriptionsBatchWithRetry(batch, apiContext, quietMode, config, previousSanitations);
             if batchResult is BatchDescriptionResponse[] {
                 if !quietMode {
                     io:println(string `  ✓ Batch ${(startIdx / batchSize) + 1} processed (${batchResult.length()} descriptions)`);
@@ -280,7 +280,7 @@ public function addMissingDescriptionsBatchWithRetry(string specFilePath, int ba
 }
 
 // Batch version of renameInlineResponseSchemas with retry and configurable batch size
-public function renameInlineResponseSchemasBatchWithRetry(string specFilePath, int batchSize = 10, boolean quietMode = false, RetryConfig? config = ()) returns int|LLMServiceError {
+public function renameInlineResponseSchemasBatchWithRetry(string specFilePath, int batchSize = 10, boolean quietMode = false, RetryConfig? config = (), string previousSanitations = "") returns int|LLMServiceError {
     if !quietMode {
         log:printInfo("Processing OpenAPI spec to rename InlineResponse schemas (batch mode with retry)",
                 specPath = specFilePath, batchSize = batchSize);
@@ -371,7 +371,7 @@ public function renameInlineResponseSchemasBatchWithRetry(string specFilePath, i
                     batchSize = batch.length());
         }
 
-        BatchRenameResponse[]|LLMServiceError batchResult = generateSchemaNamesBatchWithRetry(batch, apiContext, allExistingNames, quietMode, config);
+        BatchRenameResponse[]|LLMServiceError batchResult = generateSchemaNamesBatchWithRetry(batch, apiContext, allExistingNames, quietMode, config, previousSanitations);
         if batchResult is BatchRenameResponse[] {
             if !quietMode {
                 io:println(string `  ✓ Batch ${(startIdx / batchSize) + 1} processed (${batchResult.length()} schemas)`);
@@ -474,7 +474,7 @@ public function renameInlineResponseSchemasBatchWithRetry(string specFilePath, i
 }
 
 // Add missing operationIds to OpenAPI spec operations (batch mode with retry)
-public function addMissingOperationIdsBatchWithRetry(string specFilePath, int batchSize = 15, boolean quietMode = false, RetryConfig? config = ()) returns int|LLMServiceError {
+public function addMissingOperationIdsBatchWithRetry(string specFilePath, int batchSize = 15, boolean quietMode = false, RetryConfig? config = (), string previousSanitations = "") returns int|LLMServiceError {
     if !quietMode {
         log:printInfo("Processing OpenAPI spec for missing operationIds (batch mode with retry)",
                 specPath = specFilePath, batchSize = batchSize);
@@ -541,7 +541,7 @@ public function addMissingOperationIdsBatchWithRetry(string specFilePath, int ba
                     batchSize = batch.length());
         }
 
-        BatchOperationIdResponse[]|LLMServiceError batchResult = generateOperationIdsBatchWithRetry(batch, apiContext, existingOperationIds, quietMode, config);
+        BatchOperationIdResponse[]|LLMServiceError batchResult = generateOperationIdsBatchWithRetry(batch, apiContext, existingOperationIds, quietMode, config, previousSanitations);
         if batchResult is BatchOperationIdResponse[] {
             if !quietMode {
                 io:println(string `  ✓ Batch ${(startIdx / batchSize) + 1} processed (${batchResult.length()} operations)`);
