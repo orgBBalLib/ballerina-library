@@ -525,7 +525,22 @@ function runStandardPipeline(string openApiSpec, string outputDir, string[] pipe
         return sanitizeResult;
     }
     io:println("✓ Sanitization completed successfully");
-
+    // Generate sanitations.md documenting what was changed
+    printStepHeader(1, "Generating Sanitations Documentation", quietMode);
+    string sanitationsOriginalSpec = openApiSpec; // the raw input spec
+    string sanitationsAlignedSpec = outputDir + "/docs/spec/aligned_ballerina_openapi.json";
+    error? sanitationsDocResult = sanitizor:generateSanitationsDoc(
+            sanitationsOriginalSpec,
+            sanitationsAlignedSpec,
+            outputDir,
+            quietMode
+    );
+    if sanitationsDocResult is error {
+        io:println(string `⚠  Could not generate sanitations.md: ${sanitationsDocResult.message()}`);
+        io:println("   Continuing pipeline...");
+    } else {
+        io:println("✓ Sanitations documentation generated");
+    }
     // Step 2: Generate Ballerina client
     printStepHeader(2, "Generating Ballerina Client", quietMode);
     string sanitizedSpec = outputDir + "/docs/spec/aligned_ballerina_openapi.json";
@@ -610,7 +625,17 @@ function runStandardPipeline(string openApiSpec, string outputDir, string[] pipe
 
 function runRegenerationPipeline(string openApiSpec, string outputDir, string[] pipelineOptions, boolean quietMode, boolean autoYes) returns error? {
     printPipelineHeader(openApiSpec, outputDir, quietMode, true);
-
+    // Step 0: Apply existing sanitations to new spec before sanitization
+    printStepHeader(0, "Applying Existing Sanitations to New Spec", quietMode);
+    string sanitationsFilePath = outputDir + "/docs/spec/sanitations.md";
+    error? applyResult = sanitizor:applySanitations(sanitationsFilePath, openApiSpec, quietMode);
+    if applyResult is error {
+        io:println(string `⚠  Could not apply sanitations: ${applyResult.message()}`);
+        io:println("   Continuing without pre-sanitization...");
+    } else {
+        io:println("✓ Previous sanitations applied to new spec");
+    }
+    // Step 1: Sanitize (existing code unchanged)
     // Step 1: Sanitize OpenAPI spec
     printStepHeader(1, "Sanitizing OpenAPI Specification", quietMode);
     string[] sanitizeArgs = [openApiSpec, outputDir];
