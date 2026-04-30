@@ -33,25 +33,6 @@ public function executeSanitizor(string... args) returns error? {
         io:println("ℹ  Quiet mode enabled");
     }
 
-    // Read existing sanitations.md to maintain naming conventions across runs
-    string sanitationsPath = outputDir + "/docs/spec/sanitations.md";
-    string existingSanitations = "";
-    boolean|file:Error sanitationsExists = file:test(sanitationsPath, file:EXISTS);
-    if sanitationsExists is boolean && sanitationsExists {
-        string|io:Error sanitationsContent = io:fileReadString(sanitationsPath);
-        if sanitationsContent is string {
-            existingSanitations = sanitationsContent;
-            if !quietMode {
-                io:println(string `ℹ  Found existing sanitations.md — AI will follow prior naming conventions`);
-            }
-        }
-    }
-
-    // Track counts for sanitations.md generation
-    int operationIdsCount = 0;
-    int schemasRenamedCount = 0;
-    int descriptionsAddedCount = 0;
-
     printSanitizationPlan(inputSpecPath, outputDir, quietMode);
 
     if !getUserConfirmation("\nProceed with sanitization?", autoYes) {
@@ -188,7 +169,9 @@ public function executeSanitizor(string... args) returns error? {
     } else {
         io:println("Generating operationIds...");
         int|LLMServiceError operationIdResult = addMissingOperationIdsBatchWithRetry(
-                alignedSpec, 15, quietMode, previousSanitations = existingSanitations
+                alignedSpec,
+                15, // batchSize
+                quietMode // quietMode
         );
         if operationIdResult is LLMServiceError {
             if !quietMode {
@@ -200,7 +183,6 @@ public function executeSanitizor(string... args) returns error? {
                 return error("OperationId generation failed: " + operationIdResult.message());
             }
         } else {
-            operationIdsCount = operationIdResult;
             if !quietMode {
                 log:printInfo("Batch operationId generation completed", operationIdsAdded = operationIdResult);
             }
@@ -228,7 +210,9 @@ public function executeSanitizor(string... args) returns error? {
     } else {
         io:println("Renaming schemas...");
         int|LLMServiceError schemaRenameResult = renameInlineResponseSchemasBatchWithRetry(
-                alignedSpec, 8, quietMode, previousSanitations = existingSanitations
+                alignedSpec,
+                8, // batchSize
+                quietMode // quietMode
         );
         if schemaRenameResult is LLMServiceError {
             if !quietMode {
@@ -240,7 +224,6 @@ public function executeSanitizor(string... args) returns error? {
                 return error("Schema renaming failed: " + schemaRenameResult.message());
             }
         } else {
-            schemasRenamedCount = schemaRenameResult;
             if !quietMode {
                 log:printInfo("Batch schema renaming completed", schemasRenamed = schemaRenameResult);
             }
@@ -268,7 +251,9 @@ public function executeSanitizor(string... args) returns error? {
     } else {
         io:println("Enhancing documentation...");
         int|LLMServiceError descriptionsResult = addMissingDescriptionsBatchWithRetry(
-                alignedSpec, 20, quietMode, previousSanitations = existingSanitations
+                alignedSpec,
+                20, // batchSize
+                quietMode // quietMode
         );
         if descriptionsResult is LLMServiceError {
             if !quietMode {
@@ -280,7 +265,6 @@ public function executeSanitizor(string... args) returns error? {
                 return error("Documentation fix failed: " + descriptionsResult.message());
             }
         } else {
-            descriptionsAddedCount = descriptionsResult;
             if !quietMode {
                 log:printInfo("Batch documentation fix completed", descriptionsAdded = descriptionsResult);
             }
@@ -294,27 +278,6 @@ public function executeSanitizor(string... args) returns error? {
                 }
             }
         }
-    }
-
-    // Step 6: Generate or update sanitations.md
-    printStepHeader(6, "Generating Sanitations Documentation", quietMode);
-    io:println("Writing sanitations.md...");
-    error? sanitationsResult = generateAndWriteSanitationsDoc(
-            alignedSpec,
-            sanitationsPath,
-            existingSanitations,
-            operationIdsCount,
-            schemasRenamedCount,
-            descriptionsAddedCount,
-            quietMode
-    );
-    if sanitationsResult is error {
-        if !quietMode {
-            log:printError("Failed to generate sanitations.md", 'error = sanitationsResult);
-        }
-        io:println(string `⚠  sanitations.md generation failed: ${sanitationsResult.message()}`);
-    } else {
-        io:println(string `✓ ${existingSanitations.length() > 0 ? "Updated" : "Created"} sanitations.md`);
     }
 
     // Final completion summary
@@ -339,7 +302,6 @@ function printSanitizationPlan(string inputSpecPath, string outputDir, boolean q
     io:println("  3. Generate missing operationIds (AI)");
     io:println("  4. Rename inline response schemas (AI)");
     io:println("  5. Add missing field descriptions (AI)");
-    io:println("  6. Generate/update sanitations.md");
     io:println(sep);
 }
 

@@ -52,19 +52,6 @@ function handleCommandLineMode(string[] args) returns error? {
         "fix-code" => {
             return code_fixer:executeCodeFixer(...remainingArgs);
         }
-        "apply-sanitations" => {
-            // apply-sanitations <ballerina-project-dir> <sanitations-md-path> [quiet]
-            if remainingArgs.length() < 2 {
-                io:println("Usage: bal run -- apply-sanitations <project-dir> <sanitations-md-path> [quiet]");
-                return error("Missing arguments for apply-sanitations");
-            }
-            boolean quietMode = remainingArgs.length() > 2 && remainingArgs[2] == "quiet";
-            error? initErr = utils:initAIService(quietMode);
-            if initErr is error {
-                io:println(string `⚠  AI service init failed: ${initErr.message()}`);
-            }
-            return client_generator:applyCodeSanitations(remainingArgs[0], remainingArgs[1], quietMode);
-        }
         "pipeline" => {
             return runFullPipeline(...remainingArgs);
         }
