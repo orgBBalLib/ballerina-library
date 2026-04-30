@@ -614,10 +614,14 @@ function applyNullabilityChange(map<json> spec, NullabilityChange nc, boolean qu
     }
 }
 
+// NEW - safe
 function applyNullabilityToSchema(map<json> schemaMap, string fieldName, boolean nullable) returns boolean {
     json|error propertiesResult = schemaMap.get("properties");
     if propertiesResult is map<json> {
         map<json> properties = <map<json>>propertiesResult;
+        if !properties.hasKey(fieldName) {
+            return false;
+        }
         json|error fieldResult = properties.get(fieldName);
         if fieldResult is map<json> {
             map<json> fieldMap = <map<json>>fieldResult;
@@ -627,7 +631,6 @@ function applyNullabilityToSchema(map<json> schemaMap, string fieldName, boolean
     }
     return false;
 }
-
 function applyTypeChange(map<json> spec, TypeChange tc, boolean quietMode) {
     map<json> schemas = extractSchemas(spec);
     string[] targets = tc.schemaName != "" ? [tc.schemaName] : schemas.keys();
@@ -643,13 +646,20 @@ function applyTypeChange(map<json> spec, TypeChange tc, boolean quietMode) {
     }
 }
 
+// NEW - safe, uses hasKey before get
 function applyTypeChangeToSchema(map<json> schemaMap, string fieldName, string originalType, string updatedType) returns boolean {
     json|error propertiesResult = schemaMap.get("properties");
     if propertiesResult is map<json> {
         map<json> properties = <map<json>>propertiesResult;
+        if !properties.hasKey(fieldName) {
+            return false;
+        }
         json|error fieldResult = properties.get(fieldName);
         if fieldResult is map<json> {
             map<json> fieldMap = <map<json>>fieldResult;
+            if !fieldMap.hasKey("type") {
+                return false;
+            }
             json|error currentType = fieldMap.get("type");
             if currentType is string && <string>currentType == originalType {
                 fieldMap["type"] = updatedType;
@@ -659,7 +669,6 @@ function applyTypeChangeToSchema(map<json> schemaMap, string fieldName, string o
     }
     return false;
 }
-
 // ─────────────────────────────────────────────────────────────
 // DIFF HELPERS — used during sanitations.md generation
 // ─────────────────────────────────────────────────────────────
