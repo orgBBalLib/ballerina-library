@@ -3,6 +3,7 @@ import connector_automator.utils;
 import ballerina/file;
 import ballerina/io;
 import ballerina/regex;
+import ballerina/time;
 
 // ─────────────────────────────────────────────────────────────
 // INTERNAL TYPES (private to this file)
@@ -389,14 +390,13 @@ function renumberSections(string[] sections) returns string[] {
     return result;
 }
 
-// Update _Updated_: YYYY/MM/DD in header; leave intact if pattern not found
+// Update _Updated_: YYYY/MM/DD in header to today's date
 function updateDateInHeader(string header) returns string {
-    // Simple: replace any _Updated_: ... line with today's date placeholder
-    // We use regex to find and replace the date pattern
-    string updated = regex:replaceAll(header,
-            "_Updated_:.*",
-            "_Updated_: (see git log)");
-    return updated;
+    time:Civil today = time:utcToCivil(time:utcNow());
+    string month = today.month < 10 ? string `0${today.month}` : today.month.toString();
+    string day = today.day < 10 ? string `0${today.day}` : today.day.toString();
+    string dateStr = string `${today.year}/${month}/${day}`;
+    return regex:replaceAll(header, "_Updated_:.*", string `_Updated_: ${dateStr} \\`);
 }
 
 // True if the new section's key signal is already present in the existing file text
