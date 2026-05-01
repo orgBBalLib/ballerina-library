@@ -1,8 +1,9 @@
-import connector_automator.utils;
-
+import ballerina/ai;
 import ballerina/io;
 import ballerina/lang.value;
+import ballerina/os;
 import ballerina/regex;
+import ballerinax/ai.anthropic;
 
 const string SEPARATOR = "============================================================";
 
@@ -16,10 +17,16 @@ type AnalysisResult record {
 };
 
 function analyzeWithAnthropic(string gitDiff) returns AnalysisResult|error {
-    error? initResult = utils:initAIService(true);
-    if initResult is error {
-        return error("Failed to initialize AI service: " + initResult.message());
+    string apiKey = os:getEnv("ANTHROPIC_API_KEY");
+    if apiKey == "" {
+        return error("ANTHROPIC_API_KEY environment variable is not set");
     }
+
+    ai:ModelProvider model = check new anthropic:ModelProvider(
+        apiKey,
+        anthropic:CLAUDE_SONNET_4_6,
+        maxTokens = 1024
+    );
 
     string prompt = string `You are analyzing git diff output for a Ballerina connector to determine the semantic version change needed.
 
@@ -41,8 +48,15 @@ Analyze the diff and respond with ONLY a JSON object (no markdown, no explanatio
   "confidence": "HIGH|MEDIUM|LOW (your confidence in the classification based on the clarity of the diff)"
 }`;
 
-    string response = check utils:callAI(prompt);
-    string cleaned = regex:replaceAll(response.trim(), "```json|```", "");
+    ai:ChatMessage[] messages = [{role: "user", content: prompt}];
+    ai:ChatAssistantMessage response = check model->chat(messages);
+
+    string? content = response.content;
+    if content is () {
+        return error("Empty response from Anthropic API");
+    }
+
+    string cleaned = regex:replaceAll(content.trim(), "```json|```", "");
     return check value:fromJsonStringWithType(cleaned.trim());
 }
 
@@ -61,7 +75,7 @@ public function main(string gitDiffContent) returns error? {
     io:println(SEPARATOR);
     io:println(string `
 Version Bump: ${analysis.changeType}
-Confidence: ${analysis.confidence}
+Confidence:   ${analysis.confidence}
 
 Summary:
 ${analysis.summary}`);
