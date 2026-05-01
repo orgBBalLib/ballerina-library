@@ -67,13 +67,8 @@ public function generateSanitationsDoc(
         string outputDir,
         boolean quietMode = false) returns error? {
 
-    if !quietMode {
-        io:println("Generating sanitations.md documentation...");
-    }
-
     string sanitationsPath = outputDir + "/docs/spec/sanitations.md";
 
-    // Read both specs; if original is YAML the JSON read will fail gracefully
     json originalSpec = {};
     json alignedSpec = {};
 
@@ -87,13 +82,27 @@ public function generateSanitationsDoc(
         alignedSpec = alignedResult;
     }
 
-    string content = check buildSanitationsContent(
-            originalSpec, alignedSpec, originalSpecPath, quietMode);
+    boolean existsAlready = check file:test(sanitationsPath, file:EXISTS);
+
+    string content;
+    if existsAlready {
+        if !quietMode {
+            io:println("Updating existing sanitations.md...");
+        }
+        string existing = check io:fileReadString(sanitationsPath);
+        content = check mergeWithExistingSanitations(existing, originalSpec, alignedSpec);
+    } else {
+        if !quietMode {
+            io:println("Generating sanitations.md documentation...");
+        }
+        content = check buildSanitationsContent(originalSpec, alignedSpec, quietMode);
+    }
 
     check io:fileWriteString(sanitationsPath, content);
 
     if !quietMode {
-        io:println(string `✓ Generated sanitations.md at: ${sanitationsPath}`);
+        string verb = existsAlready ? "Updated" : "Generated";
+        io:println(string `✓ ${verb} sanitations.md at: ${sanitationsPath}`);
     }
 }
 
@@ -154,97 +163,303 @@ public function applySanitations(
 }
 
 // ─────────────────────────────────────────────────────────────
-// MARKDOWN GENERATION
+// MARKDOWN GENERATION — fresh (no existing file)
 // ─────────────────────────────────────────────────────────────
 
-function buildSanitationsContent(
-        json originalSpec,
-        json alignedSpec,
-        string originalSpecPath,
-        boolean quietMode) returns string|error {
-
+function buildSanitationsContent(json originalSpec, json alignedSpec, boolean quietMode) returns string|error {
+    string[] sectionBlocks = buildAutoDetectedSections(originalSpec, alignedSpec, 1);
     string[] lines = [];
-    string bt = "`"; // backtick helper to avoid string template issues
 
     lines.push("# Sanitation for OpenAPI specification");
     lines.push("");
     lines.push("This document records the sanitation done on top of the official OpenAPI specification.");
     lines.push("");
 
-    int changeIndex = 1;
-
-    // --- Server URL ---
-    string originalServer = extractServerUrl(originalSpec);
-    string alignedServer = extractServerUrl(alignedSpec);
-
-    if originalServer != "" && alignedServer != "" && originalServer != alignedServer {
-        lines.push(string `${changeIndex}. Change the ${bt}url${bt} property of the servers object`);
-        lines.push(string `- **Original**: ${bt}${originalServer}${bt}`);
-        lines.push(string `- **Updated**: ${bt}${alignedServer}${bt}`);
-        lines.push("- **Reason**: Common prefix added to base URL to simplify endpoint paths.");
+    foreach string block in sectionBlocks {
+        lines.push(block);
         lines.push("");
-        changeIndex += 1;
     }
 
-    // --- Removed path prefix ---
-    string removedPrefix = detectRemovedPathPrefix(originalSpec, alignedSpec);
-    if removedPrefix != "" {
-        lines.push(string `${changeIndex}. Update the API Paths`);
-        lines.push(string `- **Original**: Paths included common prefix ${bt}${removedPrefix}${bt} in each endpoint.`);
-        lines.push("- **Updated**: Common prefix removed from endpoints as it is now in the base URL.");
-        lines.push("- **Reason**: Simplifies API paths and avoids duplication.");
-        lines.push("");
-        changeIndex += 1;
+    lines.push(buildFooter());
+    return string:'join("\n", ...lines);
+}
+
+// ─────────────────────────────────────────────────────────────
+// MARKDOWN GENERATION — merge with existing file
+// ─────────────────────────────────────────────────────────────
+
+// Preserve everything the human wrote; only append genuinely new sections.
+function mergeWithExistingSanitations(string existing, json originalSpec, json alignedSpec) returns string|error {
+    // Split into: header (before first numbered item), body sections, footer
+    string header = extractFileHeader(existing);
+    string[] existingSections = extractNumberedSections(existing);
+    string footer = extractFileFooter(existing);
+
+    // Update _Updated_ date in header if the pattern exists
+    string updatedHeader = updateDateInHeader(header);
+
+    // Detect what the spec diff tells us should be documented
+    string[] newSections = buildAutoDetectedSections(originalSpec, alignedSpec, existingSections.length() + 1);
+
+    // Only keep sections that aren't already covered by existing text
+    string existingLower = existing.toLowerAscii();
+    string[] trulyNewSections = [];
+    foreach string section in newSections {
+        if !isSectionAlreadyCovered(section, existingLower) {
+            trulyNewSections.push(section);
+        }
     }
 
-    // --- Format changes ---
+    // Reassemble: header + all existing sections + any new ones + footer
+    string[] allSections = [];
+    allSections.push(...existingSections);
+    allSections.push(...trulyNewSections);
+
+    // Renumber sequentially
+    string[] renumbered = renumberSections(allSections);
+
+    string[] parts = [updatedHeader, ""];
+    foreach string s in renumbered {
+        parts.push(s);
+        parts.push("");
+    }
+    parts.push(footer);
+
+    return string:'join("\n", ...parts);
+}
+
+// Build the auto-detectable section blocks starting at a given index.
+function buildAutoDetectedSections(json originalSpec, json alignedSpec, int startIndex) returns string[] {
+    string[] blocks = [];
+    string bt = "`";
+    int idx = startIndex;
+
+    // Server URL
+    string origServer = extractServerUrl(originalSpec);
+    string newServer = extractServerUrl(alignedSpec);
+    if origServer != "" && newServer != "" && origServer != newServer {
+        blocks.push(string `${idx}. Change the ${bt}url${bt} property of the servers object
+- **Original**: ${bt}${origServer}${bt}
+- **Updated**: ${bt}${newServer}${bt}
+- **Reason**: Common prefix added to base URL to simplify endpoint paths.`);
+        idx += 1;
+    }
+
+    // Path prefix removal
+    string prefix = detectRemovedPathPrefix(originalSpec, alignedSpec);
+    if prefix != "" {
+        blocks.push(string `${idx}. Update the API Paths
+- **Original**: Paths included common prefix ${bt}${prefix}${bt} in each endpoint.
+- **Updated**: Common prefix removed from endpoints as it is now in the base URL.
+- **Reason**: Simplifies API paths and avoids duplication.`);
+        idx += 1;
+    }
+
+    // Format changes
     FormatChange[] formatChanges = detectFormatChanges(originalSpec, alignedSpec);
     foreach FormatChange fc in formatChanges {
-        lines.push(string `${changeIndex}. Update ${bt}${fc.originalFormat}${bt} to ${bt}${fc.updatedFormat}${bt}`);
-        lines.push(string `- **Original**: ${bt}"format":"${fc.originalFormat}"${bt}`);
-        lines.push(string `- **Updated**: ${bt}"format":"${fc.updatedFormat}"${bt}`);
-        lines.push(string `- **Reason**: ${fc.reason}`);
-        lines.push("");
-        changeIndex += 1;
+        blocks.push(string `${idx}. Update ${bt}${fc.originalFormat}${bt} to ${bt}${fc.updatedFormat}${bt}
+- **Original**: ${bt}"format":"${fc.originalFormat}"${bt}
+- **Updated**: ${bt}"format":"${fc.updatedFormat}"${bt}
+- **Reason**: ${fc.reason}`);
+        idx += 1;
     }
 
-    // --- Nullability changes ---
+    // Nullability changes
     NullabilityChange[] nullChanges = detectNullabilityChanges(originalSpec, alignedSpec);
     foreach NullabilityChange nc in nullChanges {
         string nowStr = nc.nullable ? "nullable" : "not nullable";
         string wasStr = nc.nullable ? "not nullable" : "nullable";
-        lines.push(string `${changeIndex}. Change ${bt}${nc.schemaName} ${nc.fieldName}${bt} to ${nowStr}`);
-        lines.push(string `- **Original**: The ${bt}${nc.fieldName}${bt} field in ${bt}${nc.schemaName}${bt} was ${bt}${wasStr}${bt}.`);
-        lines.push(string `- **Updated**: The ${bt}${nc.fieldName}${bt} field has been updated to be ${bt}${nowStr}${bt}.`);
-        lines.push(string `- **Reason**: ${nc.reason}`);
-        lines.push("");
-        changeIndex += 1;
+        blocks.push(string `${idx}. Change ${bt}${nc.schemaName} ${nc.fieldName}${bt} to ${nowStr}
+- **Original**: The ${bt}${nc.fieldName}${bt} field in ${bt}${nc.schemaName}${bt} was ${bt}${wasStr}${bt}.
+- **Updated**: The ${bt}${nc.fieldName}${bt} field has been updated to be ${bt}${nowStr}${bt}.
+- **Reason**: ${nc.reason}`);
+        idx += 1;
     }
 
-    // --- Type changes ---
+    // Type changes
     TypeChange[] typeChanges = detectTypeChanges(originalSpec, alignedSpec);
     foreach TypeChange tc in typeChanges {
-        lines.push(string `${changeIndex}. Change ${bt}${tc.fieldName}${bt} from ${bt}${tc.originalType}${bt} to ${bt}${tc.updatedType}${bt}`);
-        lines.push(string `- **Original**: The ${bt}${tc.fieldName}${bt} field was defined as a ${bt}${tc.originalType}${bt}.`);
-        lines.push(string `- **Updated**: The ${bt}${tc.fieldName}${bt} field has been changed to ${bt}${tc.updatedType}${bt}.`);
-        lines.push(string `- **Reason**: ${tc.reason}`);
-        lines.push("");
-        changeIndex += 1;
+        blocks.push(string `${idx}. Change ${bt}${tc.fieldName}${bt} from ${bt}${tc.originalType}${bt} to ${bt}${tc.updatedType}${bt}
+- **Original**: The ${bt}${tc.fieldName}${bt} field was defined as a ${bt}${tc.originalType}${bt}.
+- **Updated**: The ${bt}${tc.fieldName}${bt} field has been changed to ${bt}${tc.updatedType}${bt}.
+- **Reason**: ${tc.reason}`);
+        idx += 1;
     }
 
-    // --- Footer ---
-    lines.push("## OpenAPI cli command");
-    lines.push("");
-    lines.push("The following command was used to generate the Ballerina client from the OpenAPI specification.");
-    lines.push("The command should be executed from the repository root directory.");
-    lines.push("");
-    lines.push("```bash");
-    lines.push("bal openapi -i docs/spec/openapi.json -o ballerina --mode client --license docs/license.txt");
-    lines.push("```");
-    lines.push("");
-    lines.push("Note: The license year is hardcoded to 2025, change if necessary.");
+    return blocks;
+}
 
-    return string:'join("\n", ...lines);
+function buildFooter() returns string {
+    return "## OpenAPI cli command\n\nThe following command was used to generate the Ballerina client from the OpenAPI specification.\nThe command should be executed from the repository root directory.\n\n```bash\nbal openapi -i docs/spec/openapi.json -o ballerina --mode client --license docs/license.txt\n```\n\nNote: The license year is hardcoded to 2025, change if necessary.";
+}
+
+// ─────────────────────────────────────────────────────────────
+// FILE STRUCTURE HELPERS
+// ─────────────────────────────────────────────────────────────
+
+// Everything before the first numbered section (author, created, intro paragraph, etc.)
+function extractFileHeader(string content) returns string {
+    string[] lines = regex:split(content, "\n");
+    int firstSection = lines.length();
+    foreach int i in 0 ..< lines.length() {
+        if regex:matches(lines[i].trim(), "[0-9]+\\..*") {
+            firstSection = i;
+            break;
+        }
+    }
+    if firstSection == 0 {
+        return "";
+    }
+    string[] headerLines = lines.slice(0, firstSection);
+    // Trim trailing blank lines from header
+    int last = headerLines.length() - 1;
+    while last > 0 && headerLines[last].trim() == "" {
+        last -= 1;
+    }
+    return string:'join("\n", ...headerLines.slice(0, last + 1));
+}
+
+// Each numbered block as a separate string (without the trailing blank line)
+function extractNumberedSections(string content) returns string[] {
+    string[] sections = [];
+    string[] lines = regex:split(content, "\n");
+
+    int i = 0;
+    while i < lines.length() {
+        string line = lines[i].trim();
+        // Stop when we hit the ## footer
+        if line.startsWith("## ") {
+            break;
+        }
+        if regex:matches(line, "[0-9]+\\..*") {
+            string[] block = [lines[i]];
+            int j = i + 1;
+            while j < lines.length() {
+                string next = lines[j].trim();
+                if regex:matches(next, "[0-9]+\\..*") || next.startsWith("## ") {
+                    break;
+                }
+                block.push(lines[j]);
+                j += 1;
+            }
+            // Trim trailing blank lines from block
+            int last = block.length() - 1;
+            while last > 0 && block[last].trim() == "" {
+                last -= 1;
+            }
+            sections.push(string:'join("\n", ...block.slice(0, last + 1)));
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    return sections;
+}
+
+// Everything from the first ## heading (footer) to end of file
+function extractFileFooter(string content) returns string {
+    string[] lines = regex:split(content, "\n");
+    int footerStart = lines.length();
+    foreach int i in 0 ..< lines.length() {
+        if lines[i].trim().startsWith("## ") {
+            footerStart = i;
+            break;
+        }
+    }
+    if footerStart >= lines.length() {
+        return buildFooter();
+    }
+    return string:'join("\n", ...lines.slice(footerStart));
+}
+
+// Rewrite the section numbers (1. 2. 3. ...) to be sequential
+function renumberSections(string[] sections) returns string[] {
+    string[] result = [];
+    foreach int i in 0 ..< sections.length() {
+        string s = sections[i];
+        // Replace the leading "N." with the correct number
+        int? dot = s.indexOf(".");
+        if dot is int {
+            result.push(string `${i + 1}.` + s.substring(dot + 1));
+        } else {
+            result.push(s);
+        }
+    }
+    return result;
+}
+
+// Update _Updated_: YYYY/MM/DD in header; leave intact if pattern not found
+function updateDateInHeader(string header) returns string {
+    // Simple: replace any _Updated_: ... line with today's date placeholder
+    // We use regex to find and replace the date pattern
+    string updated = regex:replaceAll(header,
+            "_Updated_:.*",
+            "_Updated_: (see git log)");
+    return updated;
+}
+
+// True if the new section's key signal is already present in the existing file text
+function isSectionAlreadyCovered(string newSection, string existingLower) returns boolean {
+    string sectionLower = newSection.toLowerAscii();
+
+    // Server URL change: look for URL patterns
+    if sectionLower.includes("servers object") || sectionLower.includes("url") && sectionLower.includes("server") {
+        return existingLower.includes("servers object") ||
+               (existingLower.includes("url") && existingLower.includes("server"));
+    }
+
+    // Path prefix: look for "api paths" or "path prefix"
+    if sectionLower.includes("api paths") || sectionLower.includes("path prefix") || sectionLower.includes("common prefix") {
+        return existingLower.includes("api paths") ||
+               existingLower.includes("path prefix") ||
+               existingLower.includes("common prefix");
+    }
+
+    // Format change: check the specific format value
+    if sectionLower.includes("format") {
+        // Extract the format values from the section to check specifically
+        int? quoteStart = newSection.indexOf("\"format\":\"");
+        if quoteStart is int {
+            string afterQuote = newSection.substring(quoteStart + 10);
+            int? quoteEnd = afterQuote.indexOf("\"");
+            if quoteEnd is int {
+                string formatVal = afterQuote.substring(0, quoteEnd).toLowerAscii();
+                return existingLower.includes(formatVal);
+            }
+        }
+        return existingLower.includes("date-time") || existingLower.includes("datetime");
+    }
+
+    // Nullability: check schema.field combo
+    if sectionLower.includes("nullable") {
+        // Extract field name from section
+        int? bt1 = newSection.indexOf("`");
+        if bt1 is int {
+            int? bt2 = newSection.indexOf("`", bt1 + 1);
+            if bt2 is int {
+                string token = newSection.substring(bt1 + 1, bt2).toLowerAscii();
+                return existingLower.includes(token) && existingLower.includes("nullable");
+            }
+        }
+        return existingLower.includes("nullable");
+    }
+
+    // Type change: check field name
+    if sectionLower.includes("from") && (sectionLower.includes("string") || sectionLower.includes("integer")) {
+        int? bt1 = newSection.indexOf("`");
+        if bt1 is int {
+            int? bt2 = newSection.indexOf("`", bt1 + 1);
+            if bt2 is int {
+                string fieldName = newSection.substring(bt1 + 1, bt2).toLowerAscii();
+                if fieldName.length() > 0 {
+                    return existingLower.includes(fieldName);
+                }
+            }
+        }
+    }
+
+    return false;
 }
 
 // ─────────────────────────────────────────────────────────────
