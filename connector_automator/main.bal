@@ -642,6 +642,20 @@ function runRegenerationPipeline(string openApiSpec, string outputDir, string[] 
     }
     io:println("✓ Sanitization completed successfully");
 
+    // Regenerate sanitations.md to reflect what actually applied to this new spec version
+    string sanitationsAlignedSpec = outputDir + "/docs/spec/aligned_ballerina_openapi.json";
+    error? sanitationsDocResult = sanitizor:generateSanitationsDoc(
+            openApiSpec,
+            sanitationsAlignedSpec,
+            outputDir,
+            quietMode
+    );
+    if sanitationsDocResult is error {
+        io:println(string `⚠  Could not regenerate sanitations.md: ${sanitationsDocResult.message()}`);
+    } else {
+        io:println("✓ Sanitations documentation regenerated");
+    }
+
     // Step 2: Generate Ballerina client
     printStepHeader(2, "Generating Ballerina Client", quietMode);
     string sanitizedSpec = outputDir + "/docs/spec/aligned_ballerina_openapi.json";

@@ -1,3 +1,5 @@
+import connector_automator.utils;
+
 import ballerina/file;
 import ballerina/io;
 import ballerina/regex;
@@ -120,7 +122,21 @@ public function applySanitations(
     }
 
     string content = check io:fileReadString(sanitationsPath);
-    SanitationRules rules = parseSanitationsMarkdown(content);
+
+    // Try LLM-based parsing first — handles multi-field entries, typos, Ballerina-specific skips
+    SanitationRules rules;
+    SanitationRules|error llmRules = parseSanitationsWithLLM(content, quietMode);
+    if llmRules is SanitationRules {
+        rules = llmRules;
+        if !quietMode {
+            io:println("  (parsed using AI)");
+        }
+    } else {
+        if !quietMode {
+            io:println(string `  ⚠  AI parsing unavailable (${llmRules.message()}), using programmatic parser`);
+        }
+        rules = parseSanitationsMarkdown(content);
+    }
 
     if !quietMode {
         io:println(string `  Server URL rules   : ${rules.serverUrlChanges.length()}`);
@@ -229,6 +245,179 @@ function buildSanitationsContent(
     lines.push("Note: The license year is hardcoded to 2025, change if necessary.");
 
     return string:'join("\n", ...lines);
+}
+
+// ─────────────────────────────────────────────────────────────
+// LLM-BASED MARKDOWN PARSING
+// ─────────────────────────────────────────────────────────────
+
+function parseSanitationsWithLLM(string content, boolean quietMode) returns SanitationRules|error {
+    if !utils:isAIServiceInitialized() {
+        return error("LLM service not initialized");
+    }
+
+    string prompt = string `You are analyzing a Ballerina connector sanitations.md document.
+Extract ALL sanitation rules that apply to an OpenAPI JSON spec as structured JSON.
+
+SANITATIONS.MD CONTENT:
+${content}
+
+RULES TO EXTRACT:
+1. serverUrlChanges: Changes to the server URL (original → updated)
+2. pathPrefixRules: Path prefix removals (just the prefix string, e.g. "/crm/v4")
+3. formatChanges: OpenAPI format value changes (extract only the value, e.g. "date-time" not '"format":"date-time"')
+4. nullabilityChanges: Fields made nullable in schemas (schemaName, fieldName, nullable true/false)
+5. typeChanges: Field type changes in schemas (schemaName, fieldName, originalType, updatedType)
+
+IMPORTANT RULES:
+- For typeChanges where one section mentions MULTIPLE fields, produce one separate entry per field
+- For typeChanges without a specific schema mentioned, use empty string "" for schemaName
+- SKIP sections about Ballerina-level code changes (e.g. int:signed32, record fields in generated code)
+- SKIP sections about summary/description/documentation enhancements (those are handled by AI separately)
+- Only include changes that modify the raw OpenAPI spec JSON structure
+- Return ONLY valid JSON with no markdown fences
+
+REQUIRED RESPONSE FORMAT:
+{
+  "serverUrlChanges": [{"original": "...", "updated": "...", "reason": "..."}],
+  "pathPrefixRules": [{"prefixRemoved": "...", "reason": "..."}],
+  "formatChanges": [{"originalFormat": "...", "updatedFormat": "...", "reason": "..."}],
+  "nullabilityChanges": [{"schemaName": "...", "fieldName": "...", "nullable": true, "reason": "..."}],
+  "typeChanges": [{"schemaName": "...", "fieldName": "...", "originalType": "...", "updatedType": "...", "reason": "..."}]
+}`;
+
+    string|error response = utils:callAI(prompt);
+    if response is error {
+        return error("LLM call failed: " + response.message());
+    }
+
+    // Strip markdown fences if the model added them anyway
+    string cleaned = response.trim();
+    if cleaned.startsWith("```") {
+        int? firstNewline = cleaned.indexOf("\n");
+        if firstNewline is int {
+            cleaned = cleaned.substring(firstNewline + 1);
+        }
+        if cleaned.endsWith("```") {
+            cleaned = cleaned.substring(0, cleaned.length() - 3).trim();
+        }
+    }
+
+    json|error jsonResult = cleaned.fromJsonString();
+    if jsonResult is error {
+        return error("Failed to parse LLM response as JSON: " + jsonResult.message());
+    }
+
+    return jsonToSanitationRules(jsonResult);
+}
+
+function jsonToSanitationRules(json data) returns SanitationRules|error {
+    if !(data is map<json>) {
+        return error("LLM response is not a JSON object");
+    }
+    map<json> root = <map<json>>data;
+    SanitationRules rules = {};
+
+    // serverUrlChanges
+    json|error suArr = root.get("serverUrlChanges");
+    if suArr is json[] {
+        foreach json item in suArr {
+            if item is map<json> {
+                json|error orig = item.get("original");
+                json|error upd = item.get("updated");
+                json|error rsn = item.get("reason");
+                if orig is string && upd is string {
+                    rules.serverUrlChanges.push({
+                        original: orig,
+                        updated: upd,
+                        reason: rsn is string ? rsn : ""
+                    });
+                }
+            }
+        }
+    }
+
+    // pathPrefixRules
+    json|error ppArr = root.get("pathPrefixRules");
+    if ppArr is json[] {
+        foreach json item in ppArr {
+            if item is map<json> {
+                json|error pfx = item.get("prefixRemoved");
+                json|error rsn = item.get("reason");
+                if pfx is string {
+                    rules.pathPrefixRules.push({
+                        prefixRemoved: pfx,
+                        reason: rsn is string ? rsn : ""
+                    });
+                }
+            }
+        }
+    }
+
+    // formatChanges
+    json|error fcArr = root.get("formatChanges");
+    if fcArr is json[] {
+        foreach json item in fcArr {
+            if item is map<json> {
+                json|error orig = item.get("originalFormat");
+                json|error upd = item.get("updatedFormat");
+                json|error rsn = item.get("reason");
+                if orig is string && upd is string {
+                    rules.formatChanges.push({
+                        originalFormat: orig,
+                        updatedFormat: upd,
+                        reason: rsn is string ? rsn : ""
+                    });
+                }
+            }
+        }
+    }
+
+    // nullabilityChanges
+    json|error ncArr = root.get("nullabilityChanges");
+    if ncArr is json[] {
+        foreach json item in ncArr {
+            if item is map<json> {
+                json|error sn = item.get("schemaName");
+                json|error fn = item.get("fieldName");
+                json|error nl = item.get("nullable");
+                json|error rsn = item.get("reason");
+                if sn is string && fn is string && nl is boolean {
+                    rules.nullabilityChanges.push({
+                        schemaName: sn,
+                        fieldName: fn,
+                        nullable: nl,
+                        reason: rsn is string ? rsn : ""
+                    });
+                }
+            }
+        }
+    }
+
+    // typeChanges
+    json|error tcArr = root.get("typeChanges");
+    if tcArr is json[] {
+        foreach json item in tcArr {
+            if item is map<json> {
+                json|error sn = item.get("schemaName");
+                json|error fn = item.get("fieldName");
+                json|error ot = item.get("originalType");
+                json|error ut = item.get("updatedType");
+                json|error rsn = item.get("reason");
+                if fn is string && ot is string && ut is string {
+                    rules.typeChanges.push({
+                        schemaName: sn is string ? sn : "",
+                        fieldName: fn,
+                        originalType: ot,
+                        updatedType: ut,
+                        reason: rsn is string ? rsn : ""
+                    });
+                }
+            }
+        }
+    }
+
+    return rules;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -439,9 +628,13 @@ function parseTypeChangeBlock(string[] lines) returns TypeChange? {
     foreach string line in lines {
         string t = line.trim();
         if t.startsWith("- **Original**") {
-            originalType = extractFirstBacktickValue(t);
+            // Hand-written format: "The `fieldName` field was defined as a `type`." → 2nd backtick
+            // Generated format: same pattern — always take the last backtick value as the type
+            string[] vals = extractAllBacktickValues(t);
+            originalType = vals.length() >= 2 ? vals[vals.length() - 1] : (vals.length() >= 1 ? vals[0] : "");
         } else if t.startsWith("- **Updated**") {
-            updatedType = extractFirstBacktickValue(t);
+            string[] vals = extractAllBacktickValues(t);
+            updatedType = vals.length() >= 2 ? vals[vals.length() - 1] : (vals.length() >= 1 ? vals[0] : "");
         } else if t.startsWith("- **Reason**") {
             int? colon = t.indexOf(":");
             if colon is int {
@@ -936,8 +1129,17 @@ function extractAllBacktickValues(string line) returns string[] {
 }
 
 function cleanFormatValue(string raw) returns string {
-    // Strip `"format":"date-time"` → date-time
-    string cleaned = regex:replaceAll(raw, "\"format\":\"", "");
-    cleaned = regex:replaceAll(cleaned, "\"", "");
-    return cleaned.trim();
+    string trimmed = raw.trim();
+    // Handle `"format":"value"` or `"foramt":"value"` (handles typos in hand-written docs)
+    int? colonQuotePos = trimmed.indexOf(":\"");
+    if colonQuotePos is int {
+        string afterColon = trimmed.substring(colonQuotePos + 2);
+        int? endQuote = afterColon.indexOf("\"");
+        if endQuote is int {
+            return afterColon.substring(0, endQuote).trim();
+        }
+        return afterColon.trim();
+    }
+    // Plain value (no key wrapper) — just strip any stray quotes
+    return regex:replaceAll(trimmed, "\"", "").trim();
 }
