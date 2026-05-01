@@ -1047,6 +1047,11 @@ function detectTypeChanges(json originalSpec, json alignedSpec) returns TypeChan
                         map<json> aField = <map<json>>aFieldResult;
                         map<json> oField = <map<json>>oFieldResult;
 
+                        // Fields using $ref / oneOf / anyOf have no "type" key — skip them
+                        if !aField.hasKey("type") || !oField.hasKey("type") {
+                            continue;
+                        }
+
                         json|error aTypeResult = aField.get("type");
                         json|error oTypeResult = oField.get("type");
 

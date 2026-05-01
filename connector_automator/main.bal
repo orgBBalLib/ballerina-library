@@ -622,6 +622,13 @@ function runStandardPipeline(string openApiSpec, string outputDir, string[] pipe
 
 function runRegenerationPipeline(string openApiSpec, string outputDir, string[] pipelineOptions, boolean quietMode, boolean autoYes) returns error? {
     printPipelineHeader(openApiSpec, outputDir, quietMode, true);
+
+    // Initialize LLM early so applySanitations can use AI-based parsing
+    error? llmEarlyInit = utils:initAIService(quietMode);
+    if llmEarlyInit is error && !quietMode {
+        io:println("⚠  AI service unavailable early — sanitations will use programmatic parser");
+    }
+
     // Step 0: Apply existing sanitations to new spec before sanitization
     string sanitationsFilePath = outputDir + "/docs/spec/sanitations.md";
     error? applyResult = sanitizor:applySanitations(sanitationsFilePath, openApiSpec, quietMode);
