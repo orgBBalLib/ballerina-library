@@ -29,6 +29,11 @@ on:
         type: boolean
         default: false
 
+    outputs:
+      pipeline_succeeded:
+        description: "Whether the connector generation pipeline completed without errors"
+        value: ${{ jobs.auto-generate.outputs.pipeline_succeeded }}
+
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -40,6 +45,8 @@ jobs:
   auto-generate:
     name: Auto-generate connector
     runs-on: ubuntu-22.04
+    outputs:
+      pipeline_succeeded: ${{ steps.capturePipelineOutcome.outputs.pipeline_succeeded }}
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
@@ -208,6 +215,8 @@ jobs:
           echo "Created branch: ${BRANCH_NAME}"
 
       - name: Run Full Connector Generation Pipeline
+        id: run_pipeline
+        continue-on-error: true
         run: |
           cd connector_automator
           SPEC_PATH="${GITHUB_WORKSPACE}/docs/spec/${{ env.SPEC_FILE }}"
@@ -278,7 +287,20 @@ jobs:
           ${{ env.BALLERINA_CMD }} run -- pipeline "${PIPELINE_ARGS[@]}"
 
           echo "Full connector generation pipeline completed"
+
+      - name: Capture Pipeline Outcome
+        id: capturePipelineOutcome
+        if: always()
+        run: |
+          if [ "${{ steps.run_pipeline.outcome }}" = "success" ]; then
+            echo "pipeline_succeeded=true" >> $GITHUB_OUTPUT
+          else
+            echo "pipeline_succeeded=false" >> $GITHUB_OUTPUT
+            echo "Pipeline failed — partial files will still be committed and pushed"
+          fi
+
       - name: Cleanup and Organize Spec Files
+        if: always()
         run: |
           cd docs/spec
           echo "Cleaning up OpenAPI spec files..."
@@ -314,11 +336,13 @@ jobs:
           echo "OpenAPI spec file cleanup completed"
 
       - name: Remove uncommited files
+        if: always()
         run: |
           rm -rf connector_automator
           rm -f -r ballerina-dist/
 
       - name: Cleanup
+        if: always()
         run: |
           # Remove all Dependencies.toml files
           find . -name "Dependencies.toml" -type f -delete
@@ -333,21 +357,30 @@ jobs:
           echo "Removed target directories"
 
       - name: Configure Git Identity
+        if: always()
         run: |
           git config user.name "ballerina-bot"
           git config user.email "ballerina-bot@ballerina.org"
 
       - name: Commit Generated Files
         id: commitFiles
+        if: always()
         run: |
+          # Determine if this is a partial/failed generation
+          if [ "${{ steps.capturePipelineOutcome.outputs.pipeline_succeeded }}" != "true" ]; then
+            DO_NOT_MERGE_PREFIX="[DO NOT MERGE] "
+          else
+            DO_NOT_MERGE_PREFIX=""
+          fi
+
           # Build commit message
           if [ "${{ inputs.regenerate-existing }}" = "true" ]; then
-            COMMIT_MSG="[AUTOMATED] [AI] Regenerate connector for new OpenAPI spec version
+            COMMIT_MSG="${DO_NOT_MERGE_PREFIX}[AUTOMATED] [AI] Regenerate connector for new OpenAPI spec version
 
           Updated connector for new OpenAPI specification version.
           Generated using Ballerina with AI-powered automation."
           else
-            COMMIT_MSG="[AUTOMATED] [AI] Auto-generate connector from OpenAPI spec
+            COMMIT_MSG="${DO_NOT_MERGE_PREFIX}[AUTOMATED] [AI] Auto-generate connector from OpenAPI spec
 
           Complete connector generation using full pipeline with all components.
           Generated using Ballerina with AI-powered automation."
@@ -367,7 +400,7 @@ jobs:
           fi
 
       - name: Push Results
-        if: ${{ steps.commitFiles.outputs.hasChanged == 'true' }}
+        if: ${{ always() && steps.commitFiles.outputs.hasChanged == 'true' }}
         run: git push origin ${{ env.BRANCH_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.BALLERINA_BOT_TOKEN }}
