@@ -1,6 +1,30 @@
+// Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 import ballerina/io;
 import ballerina/file;
 import ballerina/regex;
+
+const string METHOD_GET = "get";
+const string METHOD_POST = "post";
+const string METHOD_PUT = "put";
+const string METHOD_DELETE = "delete";
+const string METHOD_PATCH = "patch";
+const string METHOD_REMOTE = "remote";
+const string METHOD_UNKNOWN = "unknown";
 
 type ResourceMethod record {|
     string content;
@@ -38,23 +62,23 @@ function extractMethodType(string content) returns string {
     foreach int i in 0 ..< tokens.length() {
         if tokens[i] == "function" && i + 1 < tokens.length() {
             string nameOrMethod = tokens[i + 1];
-            if nameOrMethod == "get" || nameOrMethod == "post" || nameOrMethod == "put" ||
-                    nameOrMethod == "delete" || nameOrMethod == "patch" {
+            if nameOrMethod == METHOD_GET || nameOrMethod == METHOD_POST || nameOrMethod == METHOD_PUT ||
+                    nameOrMethod == METHOD_DELETE || nameOrMethod == METHOD_PATCH {
                 return nameOrMethod;
             }
             if isRemote {
                 string lower = nameOrMethod.toLowerAscii();
-                if lower.startsWith("get") { return "get"; }
-                if lower.startsWith("post") { return "post"; }
-                if lower.startsWith("put") { return "put"; }
-                if lower.startsWith("delete") { return "delete"; }
-                if lower.startsWith("patch") { return "patch"; }
-                return "remote";
+                if lower.startsWith(METHOD_GET) { return METHOD_GET; }
+                if lower.startsWith(METHOD_POST) { return METHOD_POST; }
+                if lower.startsWith(METHOD_PUT) { return METHOD_PUT; }
+                if lower.startsWith(METHOD_DELETE) { return METHOD_DELETE; }
+                if lower.startsWith(METHOD_PATCH) { return METHOD_PATCH; }
+                return METHOD_REMOTE;
             }
         }
     }
 
-    return "unknown";
+    return METHOD_UNKNOWN;
 }
 
 function extractPath(string content) returns string {
@@ -86,8 +110,8 @@ function extractPath(string content) returns string {
     }
 
     foreach int i in 0 ..< tokens.length() {
-        if (tokens[i] == "get" || tokens[i] == "post" || tokens[i] == "put" || tokens[i] == "delete" ||
-                tokens[i] == "patch") && i + 1 < tokens.length() {
+        if (tokens[i] == METHOD_GET || tokens[i] == METHOD_POST || tokens[i] == METHOD_PUT ||
+                tokens[i] == METHOD_DELETE || tokens[i] == METHOD_PATCH) && i + 1 < tokens.length() {
             string rawPath = tokens[i + 1];
             string[] pathParts = regex:split(rawPath, "\\(");
             string path = pathParts.length() > 0 ? pathParts[0] : rawPath;
@@ -104,13 +128,13 @@ function generateSortKey(string methodType, string path) returns [string, string
     string[] segments = regex:split(normalizedPath, "/");
 
     map<string> methodPriority = {
-        "get": "1",
-        "post": "2",
-        "put": "3",
-        "delete": "4",
-        "patch": "5",
-        "remote": "6",
-        "unknown": "9"
+        [METHOD_GET]: "1",
+        [METHOD_POST]: "2",
+        [METHOD_PUT]: "3",
+        [METHOD_DELETE]: "4",
+        [METHOD_PATCH]: "5",
+        [METHOD_REMOTE]: "6",
+        [METHOD_UNKNOWN]: "9"
     };
 
     string priority = methodPriority[methodType] ?: "9";
