@@ -132,7 +132,7 @@ The pipeline accepts the following arguments:
 | 2 | `autoYes` | `"yes"` to skip confirmation prompts |
 | 3+ | flags | Optional flags: `quiet`, `regenerate`, `license=<path>` |
 
-The `regenerate` flag skips the initial client generation step, assuming the generated `client.bal` and `types.bal` already exist, and proceeds directly to examples, tests, and documentation. This is used when re-running the pipeline for a connector that already has a generated client.
+The `regenerate` flag notifies the system that is a regeneration of an existing connector. In this pipeline during sanitization we read the sanitations.md in the connector repository and sanitize acoordingly. If the initial build fails we try to modify the exsiting tests using AI,if still fails we completely remove the tests and start from scratch.In example generation also first we try to recover the old examples, only if that fails we start from the beginning.
 
 The pipeline continues on non-critical failures and reports a comprehensive summary at completion.
 
