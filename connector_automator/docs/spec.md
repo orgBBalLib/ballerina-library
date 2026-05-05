@@ -157,6 +157,7 @@ The sanitizor module processes OpenAPI specifications to prepare them for Baller
 | `retry_manager.bal` | Exponential backoff implementation |
 | `validation_utils.bal` | Input validation helpers |
 | `llm_service.bal` | LLM service initialization |
+| `sanitations_handler.bal` | Sanitations document generation, merging, and rule application |
 
 #### Processing Pipeline
 
@@ -221,6 +222,54 @@ public type RetryConfig record {
     decimal backoffMultiplier = 2.0;
     boolean jitter = true;
 };
+```
+
+#### Sanitations Document System
+
+`sanitations_handler.bal` manages a `docs/spec/sanitations.md` file that records all changes applied to the raw OpenAPI spec before Ballerina client generation. This serves as a human-readable audit trail and an executable rules file for connector regeneration.
+
+**Public API**
+
+| Function | Called when | Purpose |
+|----------|-------------|---------|
+| `generateSanitationsDoc(originalSpecPath, alignedSpecPath, outputDir, quietMode)` | After fresh generation | Diffs the original vs aligned spec and writes auto-detected sections to `sanitations.md` |
+| `applySanitations(sanitationsPath, newSpecPath, quietMode)` | Before re-sanitization on regeneration | Reads `sanitations.md`, parses rules, applies them to the newly downloaded spec |
+
+**Auto-detected change categories**
+
+| Category | Detection Method |
+|----------|-----------------|
+| Server URL change | Compares `servers[0].url` between original and aligned spec |
+| Path prefix removal | Compares first path key — if original is longer, the difference is the removed prefix |
+| Format changes | Scans for `date-time` → `datetime` conversion (Ballerina compatibility requirement) |
+| Nullability changes | Compares `nullable` flags on matching fields across schemas |
+| Type changes | Compares `type` values on matching fields across schemas |
+
+**Merge Strategy**
+
+When `sanitations.md` already exists (regeneration run), `mergeWithExistingSanitations` applies this logic:
+1. Splits sections into **human-authored** (no `<!-- auto-generated -->` marker) and **auto-generated** (has the marker)
+2. Discards stale auto-generated sections
+3. Re-runs auto-detection against the new spec pair to produce fresh sections
+4. Filters out fresh sections whose topic is already covered by a human-authored section (using `isSectionAlreadyCovered`)
+5. Reassembles: human sections first, then fresh auto sections; renumbers sequentially
+
+**Rule Parsing**
+
+When `applySanitations` reads the file it uses a two-tier parser:
+
+1. **AI-based parser** (`parseSanitationsWithLLM`): Sends the full markdown to the AI model to extract a structured `SanitationRules` JSON. Handles multi-field entries, typos, and Ballerina-level notes that should be skipped.
+2. **Programmatic fallback** (`parseSanitationsMarkdown`): Regex-based line-by-line parser used when the AI service is unavailable. Routes each numbered section to a specific block parser (`parseServerUrlBlock`, `parsePathPrefixBlock`, `parseFormatBlock`, `parseNullabilityBlock`, `parseTypeChangeBlock`).
+
+**Internal types** (private to `sanitations_handler.bal`)
+
+```ballerina
+type ServerUrlChange   record {| string original; string updated; string reason; |};
+type PathPrefixRule    record {| string prefixRemoved; string reason; |};
+type TypeChange        record {| string schemaName; string fieldName; string originalType; string updatedType; string reason; |};
+type NullabilityChange record {| string schemaName; string fieldName; boolean nullable; string reason; |};
+type FormatChange      record {| string originalFormat; string updatedFormat; string reason; |};
+type SanitationRules   record {| ServerUrlChange[] serverUrlChanges = []; PathPrefixRule[] pathPrefixRules = []; TypeChange[] typeChanges = []; NullabilityChange[] nullabilityChanges = []; FormatChange[] formatChanges = []; string[] rawEntries = []; |};
 ```
 
 #### Retry Logic
@@ -623,15 +672,59 @@ AI-powered automatic resolution of Ballerina compilation errors.
 4. Group errors by file
 5. For each file with errors:
    a. Read file content
-   b. Generate fix prompt
-   c. Call AI for fix
-   d. If user confirms (or autoYes):
+   b. Extract type context (types.bal + client.bal) for test/mock files
+   c. Load per-file fix history from fileFixHistory map
+   d. Generate fix prompt (with type context + fix history)
+   e. Call AI for fix
+   f. Record this attempt in fileFixHistory[filePath]
+   g. If user confirms (or autoYes):
       - Create backup
       - Apply fix
 6. If no fixes applied → Stop
 7. Repeat from step 1 (max iterations)
 8. Final build check and summary
 ```
+
+**Configurable**: `maxIterations` is read from `Config.toml` (`[connector_automator.code_fixer] maxIterations = 5`).
+
+#### Oscillation Prevention
+
+A key challenge in iterative AI fixing is oscillation — where fixing error A introduces error B and vice versa, causing the fixer to loop indefinitely.
+
+The fixer tracks per-file fix history across iterations in a `map<FixAttempt[]>` keyed by file path. Before each AI call, `buildFixHistoryContext` compiles the history into a structured block that is injected into the prompt:
+
+```
+PREVIOUS FIX ATTEMPTS (DO NOT REPEAT THESE - THEY FAILED):
+Iteration 2:
+  Errors at that time: not a required field 'reportId'
+  What was tried: Line 15: not a required field 'reportId'
+  Result: FAILED (caused new/same errors)
+Iteration 3:
+  Errors at that time: incompatible types: expected 'string?', found 'anydata'
+  What was tried: Line 15: incompatible types
+  Result: FAILED (caused new/same errors)
+```
+
+Three prompt variants are used depending on available context:
+
+| Function | Used when |
+|----------|-----------|
+| `createFixPrompt` | No type context, no history |
+| `createFixPromptWithContext` | Type context available (test/mock files), no history |
+| `createFixPromptWithHistory` | Both type context and fix history available |
+
+`createFixPromptWithHistory` includes a `<CRITICAL_FIX_HISTORY>` section that explicitly instructs the AI not to repeat failed patterns. It also detects the common oscillation pattern between "not a required field" and "incompatible types: anydata" errors and prescribes the combined solution: `<ExpectedType?>response["fieldName"]`.
+
+#### Type Context Extraction
+
+For test and mock server files, the fixer provides additional context to the AI via `getTypeContextForFile`:
+
+1. Reads the full `types.bal` from the project (or `modules/mock.server/types.bal` for mock files)
+2. Reads the full `client.bal` for method signature context
+3. Extracts the specific type definitions referenced in the current error messages (via `extractTypeNamesFromErrors` + `extractTypeDefinition`)
+4. Assembles all three into a `<TYPE_CONTEXT>` block in the prompt
+
+This ensures the AI knows whether a field is a required record field, an optional (`?`) field, or a rest field (not explicitly defined), which is critical for choosing between `.field`, `?.field`, and `["field"]` access patterns.
 
 #### Key Types
 
@@ -657,6 +750,12 @@ public type FixResponse record {|
     boolean success;
     string fixedCode;
     string explanation;
+|};
+
+public type FixAttempt record {|
+    int iteration;
+    string[] errorMessages;
+    string appliedFix;
 |};
 ```
 
@@ -1065,6 +1164,12 @@ public type FixResponse record {|
     string explanation;
 |};
 
+public type FixAttempt record {|
+    int iteration;
+    string[] errorMessages;
+    string appliedFix;
+|};
+
 public type BallerinaFixerError error;
 ```
 
@@ -1083,7 +1188,7 @@ The connector automator is designed to run inside a GitHub Actions reusable work
 | `distribution-zip` | string | `""` | Distribution URL of a custom Ballerina build |
 | `license-file` | string | `license.txt` | Path to license file relative to `docs/` |
 | `quiet-mode` | boolean | `true` | Suppress verbose pipeline output |
-| `regenerate-existing` | boolean | `false` | Skip client generation and only regenerate examples, tests, and docs |
+| `regenerate-existing` | boolean | `false` | Regeneration of an existing connector |
 
 ### Workflow Outputs
 
