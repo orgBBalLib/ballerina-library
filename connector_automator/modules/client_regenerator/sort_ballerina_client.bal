@@ -45,7 +45,7 @@ type ContentBlock record {|
 function extractMethodType(string content) returns string {
     string[] lines = regex:split(content, "\n");
     if lines.length() == 0 {
-        return "unknown";
+        return METHOD_UNKNOWN;
     }
 
     string firstLine = regex:replaceAll(lines[0].trim(), "\\s+", " ");
@@ -59,6 +59,8 @@ function extractMethodType(string content) returns string {
         }
     }
 
+    // For resource functions: HTTP method is the keyword immediately before the path
+    // e.g. `resource function get /users[string id](...)`
     foreach int i in 0 ..< tokens.length() {
         if tokens[i] == "function" && i + 1 < tokens.length() {
             string nameOrMethod = tokens[i + 1];
@@ -66,19 +68,28 @@ function extractMethodType(string content) returns string {
                     nameOrMethod == METHOD_DELETE || nameOrMethod == METHOD_PATCH {
                 return nameOrMethod;
             }
-            if isRemote {
-                string lower = nameOrMethod.toLowerAscii();
-                if lower.startsWith(METHOD_GET) { return METHOD_GET; }
-                if lower.startsWith(METHOD_POST) { return METHOD_POST; }
-                if lower.startsWith(METHOD_PUT) { return METHOD_PUT; }
-                if lower.startsWith(METHOD_DELETE) { return METHOD_DELETE; }
-                if lower.startsWith(METHOD_PATCH) { return METHOD_PATCH; }
-                return METHOD_REMOTE;
-            }
+            break;
         }
     }
 
+    // For remote functions: read the HTTP method from the client call in the function body.
+    // `bal openapi` always generates `self.clientEp->get(...)`, `->post(...)`, etc.
+    // This is accurate regardless of how the function is named.
+    if isRemote {
+        return extractHttpMethodFromBody(content);
+    }
+
     return METHOD_UNKNOWN;
+}
+
+function extractHttpMethodFromBody(string content) returns string {
+    string lower = content.toLowerAscii();
+    if lower.includes("->get(") { return METHOD_GET; }
+    if lower.includes("->post(") { return METHOD_POST; }
+    if lower.includes("->put(") { return METHOD_PUT; }
+    if lower.includes("->delete(") { return METHOD_DELETE; }
+    if lower.includes("->patch(") { return METHOD_PATCH; }
+    return METHOD_REMOTE;
 }
 
 function extractPath(string content) returns string {
