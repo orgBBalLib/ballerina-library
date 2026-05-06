@@ -125,7 +125,7 @@ jobs:
           echo "Waiting ${INITIAL_WAIT} seconds (10 minutes) for connector generation workflows to process..."
           sleep $INITIAL_WAIT
 
-          MAX_WAIT=1800
+          MAX_WAIT=4800
           CHECK_INTERVAL=30
           ELAPSED=0
 
