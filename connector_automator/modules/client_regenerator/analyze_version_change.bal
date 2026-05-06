@@ -27,6 +27,10 @@ const string ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY";
 // Diffs larger than this threshold are sent in multiple turns to stay within
 // the OS argument-length limit and the model's single-message context budget.
 const int CHUNK_SIZE = 50000;
+// Maximum chunks sent in a multi-turn conversation. Beyond this the accumulated
+// context overflows the model's window and causes mid-session API errors.
+// 10 chunks = 500 KB — enough to capture all API-surface changes in practice.
+const int MAX_CHUNKS = 10;
 
 type AnalysisResult record {
     string changeType;
@@ -59,7 +63,7 @@ function buildModel() returns ai:ModelProvider|error {
     return check new anthropic:ModelProvider(
         apiKey,
         anthropic:CLAUDE_SONNET_4_6,
-        maxTokens = 1024
+        maxTokens = 4096
     );
 }
 
@@ -91,33 +95,46 @@ ${JSON_SCHEMA}`;
 
 function analyzeInChunks(ai:ModelProvider model, string gitDiff) returns AnalysisResult|error {
     int totalChunks = (gitDiff.length() + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    io:println(string `Diff too large for single turn — splitting into ${totalChunks} chunks`);
+    int chunksToSend = totalChunks > MAX_CHUNKS ? MAX_CHUNKS : totalChunks;
+    boolean truncated = totalChunks > MAX_CHUNKS;
+
+    if truncated {
+        io:println(string `Diff has ${totalChunks} chunks — capping at ${MAX_CHUNKS} to stay within model context limit (${MAX_CHUNKS * CHUNK_SIZE / 1000}KB of ${gitDiff.length() / 1000}KB analysed)`);
+    } else {
+        io:println(string `Diff too large for single turn — splitting into ${chunksToSend} chunks`);
+    }
 
     ai:ChatMessage[] messages = [];
 
-    // Tell the model to wait for all parts before analysing
-    string intro = string `I will send you a large git diff for a Ballerina connector in ${totalChunks} parts because of its size. Please wait until you have received all parts before analysing. After each part simply acknowledge with "Received part X/${totalChunks}." and nothing else.`;
+    string truncationNote = truncated
+        ? string ` NOTE: the diff is very large; you will receive only the first ${chunksToSend} of ${totalChunks} parts (~${MAX_CHUNKS * CHUNK_SIZE / 1000}KB of ~${gitDiff.length() / 1000}KB). Focus on API-surface changes visible in the portion you receive.`
+        : "";
+
+    string intro = string `I will send you a large git diff for a Ballerina connector in ${chunksToSend} parts because of its size.${truncationNote} Please wait until you have received all parts before analysing. After each part simply acknowledge with "Received part X/${chunksToSend}." and nothing else.`;
     messages.push({role: "user", content: intro});
 
     ai:ChatAssistantMessage introAck = check model->chat(messages);
     messages.push({role: "assistant", content: introAck.content ?: ""});
 
-    // Send each chunk
-    foreach int i in 0 ..< totalChunks {
+    // Send only up to MAX_CHUNKS chunks
+    foreach int i in 0 ..< chunksToSend {
         int startIdx = i * CHUNK_SIZE;
         int endIdx = startIdx + CHUNK_SIZE;
         int safeEnd = endIdx < gitDiff.length() ? endIdx : gitDiff.length();
         string chunk = gitDiff.substring(startIdx, safeEnd);
 
-        io:println(string `Sending chunk ${i + 1}/${totalChunks} (${chunk.length()} chars)`);
+        io:println(string `Sending chunk ${i + 1}/${chunksToSend} (${chunk.length()} chars)`);
 
-        messages.push({role: "user", content: string `Part ${i + 1}/${totalChunks}:\n\n${chunk}`});
+        messages.push({role: "user", content: string `Part ${i + 1}/${chunksToSend}:\n\n${chunk}`});
         ai:ChatAssistantMessage chunkAck = check model->chat(messages);
         messages.push({role: "assistant", content: chunkAck.content ?: ""});
     }
 
-    // Request the final analysis now that all chunks have been delivered
-    string analysisRequest = string `You have received all ${totalChunks} parts of the git diff.
+    string truncationWarning = truncated
+        ? string `\n\nIMPORTANT: You only received the first ~${MAX_CHUNKS * CHUNK_SIZE / 1000}KB of a ~${gitDiff.length() / 1000}KB diff. Base your classification on what you saw; set confidence to LOW if you cannot be certain.`
+        : "";
+
+    string analysisRequest = string `You have received all ${chunksToSend} parts of the git diff.${truncationWarning}
 
 ${VERSION_RULES}
 
