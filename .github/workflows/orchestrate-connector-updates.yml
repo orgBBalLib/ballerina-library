@@ -314,7 +314,7 @@ jobs:
             "<td><code>" + .specification + "</code></td>" +
             "<td><code>" + .openapiVersion + "</code></td>" +
             "<td><code>" + (.expectedVersion // "N/A") + "</code></td>" +
-            "<td><span class=\"change-" + (.changeType | ascii_downcase) + "\">" + .changeType + "</span></td>" +
+            "<td><span class=\"change-" + (.changeType | ascii_downcase) + "\">" + (if .changeType == "NONE" then "No Version Change" elif .changeType == "UNKNOWN" then "Unknown" else .changeType end) + "</span></td>" +
             "<td>" + (if .buildStatus == "FAILED" or .buildStatus == "Workflow Failed" then "<span class=\"status-failed\">FAILED</span>" elif .buildStatus == "Partial" then "<span class=\"status-partial\">Partial</span>" elif .buildStatus == "Up to date" then "<span class=\"status-uptodate\">Up to date</span>" elif .buildStatus == "In Progress" then "In Progress" else "<span class=\"status-success\">Success</span>" end) + "</td>" +
             "<td>" + (if .pr.number > 0 then (if .doNotMerge == "true" then "<span class=\"do-not-merge\">DO NOT MERGE</span>" else "" end) + "<a href=\"" + .pr.url + "\">#" + (.pr.number | tostring) + "</a>" else "Not Created" end) + "</td>" +
             "<td>" + (.codeOwners // "N/A") + "</td>" +
